@@ -1,0 +1,64 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id            Int       @id @default(1)
+  name          String    @default("用户")
+  height        Float
+  weight        Float
+  age           Int
+  gender        String
+  activityLevel String
+  goal          String
+  targetWeight  Float?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  foodLogs      FoodLog[]
+  trainingLogs  TrainingLog[]
+  plans         Plan[]
+}
+
+model FoodLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @default(1)
+  user        User     @relation(fields: [userId], references: [id])
+  date        String
+  meal        String
+  foodName    String
+  calories    Float
+  protein     Float    @default(0)
+  carbs       Float    @default(0)
+  fat         Float    @default(0)
+  imageUrl    String?
+  source      String   @default("manual")
+  createdAt   DateTime @default(now())
+}
+
+model TrainingLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @default(1)
+  user        User     @relation(fields: [userId], references: [id])
+  date        String
+  exercise    String
+  duration    Int
+  completed   Boolean  @default(false)
+  notes       String?
+  createdAt   DateTime @default(now())
+}
+
+model Plan {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @default(1)
+  user        User     @relation(fields: [userId], references: [id])
+  type        String
+  content     String
+  week        Int      @default(1)
+  createdAt   DateTime @default(now())
+}

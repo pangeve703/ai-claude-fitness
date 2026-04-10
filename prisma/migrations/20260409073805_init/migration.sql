@@ -1,0 +1,55 @@
+-- CreateTable
+CREATE TABLE "User" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT DEFAULT 1,
+    "name" TEXT NOT NULL DEFAULT '用户',
+    "height" REAL NOT NULL,
+    "weight" REAL NOT NULL,
+    "age" INTEGER NOT NULL,
+    "gender" TEXT NOT NULL,
+    "activityLevel" TEXT NOT NULL,
+    "goal" TEXT NOT NULL,
+    "targetWeight" REAL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE "FoodLog" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "userId" INTEGER NOT NULL DEFAULT 1,
+    "date" TEXT NOT NULL,
+    "meal" TEXT NOT NULL,
+    "foodName" TEXT NOT NULL,
+    "calories" REAL NOT NULL,
+    "protein" REAL NOT NULL DEFAULT 0,
+    "carbs" REAL NOT NULL DEFAULT 0,
+    "fat" REAL NOT NULL DEFAULT 0,
+    "imageUrl" TEXT,
+    "source" TEXT NOT NULL DEFAULT 'manual',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "FoodLog_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE "TrainingLog" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "userId" INTEGER NOT NULL DEFAULT 1,
+    "date" TEXT NOT NULL,
+    "exercise" TEXT NOT NULL,
+    "duration" INTEGER NOT NULL,
+    "completed" BOOLEAN NOT NULL DEFAULT false,
+    "notes" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "TrainingLog_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE "Plan" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "userId" INTEGER NOT NULL DEFAULT 1,
+    "type" TEXT NOT NULL,
+    "content" TEXT NOT NULL,
+    "week" INTEGER NOT NULL DEFAULT 1,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "Plan_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);
