@@ -58,21 +58,27 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
 
   async function addFood() {
     if (!addForm.foodName || !addForm.calories) return;
-    await fetch("/api/food-log", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...addForm,
-        calories: parseFloat(addForm.calories),
-        protein: parseFloat(addForm.protein) || 0,
-        carbs: parseFloat(addForm.carbs) || 0,
-        fat: parseFloat(addForm.fat) || 0,
-        date: today,
-      }),
-    });
-    setAddForm({ meal: "breakfast", foodName: "", calories: "", protein: "", carbs: "", fat: "" });
-    setShowAddForm(false);
-    router.refresh();
+    try {
+      const res = await fetch("/api/food-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...addForm,
+          calories: parseFloat(addForm.calories),
+          protein: parseFloat(addForm.protein) || 0,
+          carbs: parseFloat(addForm.carbs) || 0,
+          fat: parseFloat(addForm.fat) || 0,
+          date: today,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to add food");
+      setAddForm({ meal: "breakfast", foodName: "", calories: "", protein: "", carbs: "", fat: "" });
+      setShowAddForm(false);
+      router.refresh();
+    } catch (err) {
+      console.error("Add food error:", err);
+      alert("添加食物失败，请重试");
+    }
   }
 
   async function deleteFood(id: number) {
