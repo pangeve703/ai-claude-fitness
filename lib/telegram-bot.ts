@@ -8,7 +8,23 @@ let lastWeeklySummaryWeek = -1;
 
 export function getBot(): TelegramBot {
   if (!bot) {
-    bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { polling: true });
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      console.error("❌ TELEGRAM_BOT_TOKEN is not set");
+      throw new Error("TELEGRAM_BOT_TOKEN not configured");
+    }
+
+    bot = new TelegramBot(token, { polling: true });
+
+    // Add error handlers
+    bot.on("error", (error) => {
+      console.error("🔴 Bot error:", error);
+    });
+
+    bot.on("polling_error", (error) => {
+      console.error("🔴 Polling error:", error);
+    });
+
     setupHandlers(bot);
     console.log("🤖 Telegram Bot 已启动（轮询模式）");
     scheduleWeeklySummary(bot);
@@ -162,15 +178,20 @@ async function getQuickFoods() {
 function setupHandlers(bot: TelegramBot) {
   // Track chatId for weekly push
   bot.on("message", (msg) => {
-    if (msg.chat?.id) lastChatId = msg.chat.id;
+    try {
+      if (msg.chat?.id) lastChatId = msg.chat.id;
+    } catch (err) {
+      console.error("Error tracking chat ID:", err);
+    }
   });
 
   // 欢迎命令
   bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    await bot.sendMessage(
-      chatId,
-      `👋 你好！我是你的 AI 健身教练助理！
+    try {
+      const chatId = msg.chat.id;
+      await bot.sendMessage(
+        chatId,
+        `👋 你好！我是你的 AI 健身教练助理！
 
 📸 发送食物照片，我会自动识别并记录卡路里。
 ✏️ 也可以直接输入你吃了什么，例如：「早餐吃了一碗燕麦粥和两颗鸡蛋」
@@ -179,8 +200,11 @@ function setupHandlers(bot: TelegramBot) {
 /today - 查看今日饮食记录
 /summary - 查看今日营养总结
 /help - 显示帮助`,
-      { parse_mode: "Markdown" }
-    );
+        { parse_mode: "Markdown" }
+      );
+    } catch (err) {
+      console.error("Error in /start handler:", err);
+    }
   });
 
   bot.onText(/\/help/, async (msg) => {
@@ -433,47 +457,53 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
 
   // 处理文字（食物描述或餐别关键字）
   bot.on("message", async (msg) => {
-    if (msg.photo || msg.text?.startsWith("/")) return;
-    const text = (msg.text || "").trim();
-    const chatId = msg.chat.id;
-
-    if (text.length < 2) {
-      await bot.sendMessage(chatId, "📸 请发送食物照片，或描述你吃了什么，例如：「早餐吃了一碗燕麦粥」");
-      return;
-    }
-
-    // Check if it's a standalone meal keyword update (for updating last entry)
-    const standaloneKeyword = detectMealFromText(text);
-    const isShortKeyword = text.length <= 6 && standaloneKeyword;
-
-    if (isShortKeyword) {
-      // Update the most recent food log today to correct meal type
-      const today = getTodayString();
-      const last = await prisma.foodLog.findFirst({
-        where: { date: today },
-        orderBy: { createdAt: "desc" },
-      });
-      if (last) {
-        await prisma.foodLog.update({
-          where: { id: last.id },
-          data: { meal: standaloneKeyword },
-        });
-        await bot.sendMessage(chatId, `✅ 已将「${last.foodName}」更新为 *${MEAL_NAME[standaloneKeyword]}*`, {
-          parse_mode: "Markdown",
-        });
-      } else {
-        await bot.sendMessage(chatId, `好的，下次记录将归入 *${MEAL_NAME[standaloneKeyword]}*`, {
-          parse_mode: "Markdown",
-        });
-      }
-      return;
-    }
-
-    // Treat as food description
-    const processingMsg = await bot.sendMessage(chatId, "🔍 正在分析食物描述...");
-
     try {
-      const result = await analyzeTextFood(text);
+      if (msg.photo || msg.text?.startsWith("/")) return;
+      const text = (msg.text || "").trim();
+      const chatId = msg.chat.id;
+
+      if (text.length < 2) {
+        await bot.sendMessage(chatId, "📸 请发送食物照片，或描述你吃了什么，例如：「早餐吃了一碗燕麦粥」");
+        return;
+      }
+
+      // Check if it's a standalone meal keyword update (for updating last entry)
+      const standaloneKeyword = detectMealFromText(text);
+      const isShortKeyword = text.length <= 6 && standaloneKeyword;
+
+      if (isShortKeyword) {
+        try {
+          // Update the most recent food log today to correct meal type
+          const today = getTodayString();
+          const last = await prisma.foodLog.findFirst({
+            where: { date: today },
+            orderBy: { createdAt: "desc" },
+          });
+          if (last) {
+            await prisma.foodLog.update({
+              where: { id: last.id },
+              data: { meal: standaloneKeyword },
+            });
+            await bot.sendMessage(chatId, `✅ 已将「${last.foodName}」更新为 *${MEAL_NAME[standaloneKeyword]}*`, {
+              parse_mode: "Markdown",
+            });
+          } else {
+            await bot.sendMessage(chatId, `好的，下次记录将归入 *${MEAL_NAME[standaloneKeyword]}*`, {
+              parse_mode: "Markdown",
+            });
+          }
+        } catch (err) {
+          console.error("Error updating meal:", err);
+          await bot.sendMessage(chatId, "❌ 更新失败，请重试");
+        }
+        return;
+      }
+
+      // Treat as food description
+      const processingMsg = await bot.sendMessage(chatId, "🔍 正在分析食物描述...");
+
+      try {
+        const result = await analyzeTextFood(text);
 
       if (result.calories === 0) {
         await bot.editMessageText("❓ 无法识别食物内容，请描述具体食物，例如：「午餐吃了鸡肉饭和青菜」", {
@@ -520,13 +550,16 @@ ${calSummary}`;
         message_id: processingMsg.message_id,
         parse_mode: "Markdown",
       });
+      } catch (err) {
+        const error = err as { message?: string };
+        console.error("分析文字失败:", error?.message);
+        await bot.editMessageText("❌ 分析失败，请重试或发送食物照片", {
+          chat_id: chatId,
+          message_id: processingMsg.message_id,
+        });
+      }
     } catch (err) {
-      const error = err as { message?: string };
-      console.error("分析文字失败:", error?.message);
-      await bot.editMessageText("❌ 分析失败，请重试或发送食物照片", {
-        chat_id: chatId,
-        message_id: processingMsg.message_id,
-      });
+      console.error("Error in text message handler:", err);
     }
   });
 }
