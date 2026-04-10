@@ -15,7 +15,11 @@
       "Read(//private/tmp/**)",
       "Bash(npx tsc:*)",
       "Bash(node -e \"require\\('recharts'\\); console.log\\('ok'\\)\")",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

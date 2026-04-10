@@ -20,7 +20,7 @@ export default async function DietPage() {
   });
 
   const totals = foodLogs.reduce(
-    (acc, log) => ({
+    (acc: { calories: number; protein: number; carbs: number; fat: number }, log) => ({
       calories: acc.calories + log.calories,
       protein: acc.protein + log.protein,
       carbs: acc.carbs + log.carbs,
