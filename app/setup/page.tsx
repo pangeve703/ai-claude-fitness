@@ -39,7 +39,8 @@ export default function SetupPage() {
   async function handleSubmit() {
     setLoading(true);
     try {
-      await fetch("/api/profile", {
+      // Save profile
+      const profileRes = await fetch("/api/profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -53,11 +54,22 @@ export default function SetupPage() {
           goal: form.goal,
         }),
       });
-      // Start telegram bot
-      await fetch("/api/bot-start", { method: "POST" });
+
+      if (!profileRes.ok) {
+        throw new Error(`Profile save failed: ${profileRes.statusText}`);
+      }
+
+      // Try to start telegram bot (optional)
+      try {
+        await fetch("/api/bot-start", { method: "POST" });
+      } catch (botErr) {
+        console.warn("Telegram bot init failed:", botErr);
+      }
+
       router.push("/dashboard");
     } catch (err) {
-      console.error(err);
+      console.error("Setup error:", err);
+      alert(`设置失败: ${err instanceof Error ? err.message : "未知错误"}`);
     } finally {
       setLoading(false);
     }
