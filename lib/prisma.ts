@@ -15,21 +15,28 @@ export function getPrismaClient(): PrismaClient {
   const isProduction = process.env.NODE_ENV === "production";
 
   try {
-    // Only use adapters in production with Turso
     if (isProduction && dbUrl?.startsWith("libsql://")) {
-      // Production: Turso with LibSQL adapter
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { createClient } = require("@libsql/client") as any;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const adapter = require("@prisma/adapter-libsql") as any;
+      // Production: Use LibSQL adapter for Turso
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const libsql = require("@libsql/client") as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const libsqlAdapter = require("@prisma/adapter-libsql") as any;
 
-      const client = createClient({ url: dbUrl });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const libsqlAdapter = new adapter.PrismaLibSQL(client);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      prismaInstance = new PrismaClient({ adapter: libsqlAdapter } as any);
+        const client = libsql.createClient({ url: dbUrl });
+        // Try both possible export patterns
+        const Adapter = libsqlAdapter.PrismaLibSQL || libsqlAdapter.default?.PrismaLibSQL || libsqlAdapter;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const adapter = new Adapter(client);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        prismaInstance = new PrismaClient({ adapter } as any);
+      } catch (adapterError) {
+        console.warn("Failed to initialize LibSQL adapter, attempting direct instantiation:", adapterError);
+        // If adapter fails, fall back to trying direct URL
+        prismaInstance = new PrismaClient();
+      }
     } else {
-      // Development: always use local SQLite with BetterSqlite3
+      // Development: Always use local SQLite with BetterSqlite3
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const adapter = require("@prisma/adapter-better-sqlite3") as any;
       const localDbUrl = "file:./prisma/dev.db";
@@ -40,7 +47,12 @@ export function getPrismaClient(): PrismaClient {
     }
   } catch (error) {
     console.error("Prisma initialization error:", error);
-    throw error;
+    // Last resort: create without adapter (may fail but won't crash during require)
+    try {
+      prismaInstance = new PrismaClient();
+    } catch {
+      throw error;
+    }
   }
 
   return prismaInstance;
