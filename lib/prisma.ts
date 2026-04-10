@@ -18,28 +18,38 @@ export function getPrismaClient(): PrismaClient {
     if (dbUrl.startsWith("libsql://")) {
       // Turso
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { createClient } = require("@libsql/client") as any;
+      const libsql = require("@libsql/client") as any;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { PrismaLibSQL } = require("@prisma/adapter-libsql") as any;
+      const libsqlAdapter = require("@prisma/adapter-libsql") as any;
 
+      const createClient = libsql.createClient || libsql.default?.createClient;
       const client = createClient({ url: dbUrl });
+
+      // Try different export patterns
+      const AdapterConstructor = libsqlAdapter.PrismaLibSQL || libsqlAdapter.default || libsqlAdapter;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const adapter = new PrismaLibSQL(client);
+      const adapter = new AdapterConstructor(client);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       prismaInstance = new PrismaClient({ adapter } as any);
     } else {
       // Local SQLite
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { PrismaBetterSqlite3 } = require("@prisma/adapter-better-sqlite3") as any;
+      const betterSqlite = require("@prisma/adapter-better-sqlite3") as any;
+      const AdapterConstructor = betterSqlite.PrismaBetterSqlite3 || betterSqlite.default;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const adapter = new PrismaBetterSqlite3({ url: dbUrl });
+      const adapter = new AdapterConstructor({ url: dbUrl });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       prismaInstance = new PrismaClient({ adapter } as any);
     }
   } catch (error) {
-    console.error("Failed to initialize Prisma:", error);
-    // Fallback
-    prismaInstance = new PrismaClient();
+    console.error("Failed to initialize Prisma with adapter:", error);
+    // Fallback - try without adapter
+    try {
+      prismaInstance = new PrismaClient();
+    } catch (fallbackError) {
+      console.error("Fallback Prisma initialization also failed:", fallbackError);
+      throw error;
+    }
   }
 
   return prismaInstance;
