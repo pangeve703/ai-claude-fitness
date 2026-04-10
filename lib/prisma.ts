@@ -4,25 +4,55 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-function createPrismaClient() {
-  // For local development with SQLite, use BetterSqlite3 adapter
-  // For Turso/production, the adapter is inferred from DATABASE_URL
-  if (process.env.DATABASE_URL?.startsWith("libsql://")) {
-    // Turso - Prisma handles this automatically
-    return new PrismaClient();
-  } else {
-    // Local SQLite with BetterSqlite3 adapter
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { PrismaBetterSqlite3 } = require("@prisma/adapter-better-sqlite3") as any;
+let prismaInstance: PrismaClient | undefined;
 
-    const dbPath = process.env.DATABASE_URL?.replace("file:", "") || "prisma/dev.db";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const adapter = new PrismaBetterSqlite3({ url: `file:${dbPath}` } as any);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return new PrismaClient({ adapter } as any);
+export function getPrismaClient(): PrismaClient {
+  if (prismaInstance) {
+    return prismaInstance;
   }
+
+  // Initialize on first use
+  const dbUrl = process.env.DATABASE_URL || "file:./prisma/dev.db";
+
+  try {
+    if (dbUrl.startsWith("libsql://")) {
+      // Turso
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { createClient } = require("@libsql/client") as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { PrismaLibSQL } = require("@prisma/adapter-libsql") as any;
+
+      const client = createClient({ url: dbUrl });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const adapter = new PrismaLibSQL(client);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      prismaInstance = new PrismaClient({ adapter } as any);
+    } else {
+      // Local SQLite
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { PrismaBetterSqlite3 } = require("@prisma/adapter-better-sqlite3") as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const adapter = new PrismaBetterSqlite3({ url: dbUrl });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      prismaInstance = new PrismaClient({ adapter } as any);
+    }
+  } catch (error) {
+    console.error("Failed to initialize Prisma:", error);
+    // Fallback
+    prismaInstance = new PrismaClient();
+  }
+
+  return prismaInstance;
 }
 
-export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+// For backwards compatibility, export a lazy proxy
+export const prisma = new Proxy({} as any, {
+  get(_target, prop: string | symbol) {
+    const client = getPrismaClient();
+    return Reflect.get(client, prop);
+  },
+}) as PrismaClient;
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prismaInstance;
+}
