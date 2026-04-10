@@ -19,7 +19,11 @@
       "Bash(git commit -m ':*)",
       "Bash(git remote:*)",
       "Bash(git push:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(pkill -f \"prisma db push\")"
+    ],
+    "additionalDirectories": [
+      "/private/tmp"
     ]
   }
 }
