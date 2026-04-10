@@ -51,7 +51,7 @@ export default async function DashboardPage() {
     ? nextMonday(now)
     : null;
 
-  const todayCalories = foodLogs.reduce((sum, log) => sum + log.calories, 0);
+  const todayCalories = foodLogs.reduce((sum: number, log) => sum + log.calories, 0);
   const completedWorkouts = trainingLogs.filter((l) => l.completed).length;
 
   const bmi = user.weight / ((user.height / 100) ** 2);
@@ -85,7 +85,7 @@ export default async function DashboardPage() {
 
   const chartData = chartDays.map((date) => {
     const dayLogs = weekLogs.filter((l) => l.date === date);
-    const consumed = Math.round(dayLogs.reduce((sum, l) => sum + l.calories, 0));
+    const consumed = Math.round(dayLogs.reduce((sum: number, l) => sum + l.calories, 0));
     // Parse burned calories from workout notes JSON
     const dayWorkouts = weekWorkouts.filter((w) => w.date === date);
     let burned = 0;

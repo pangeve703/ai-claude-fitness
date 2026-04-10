@@ -52,7 +52,7 @@ export default function TrainingClient({ trainingLogs, plan, today }: Props) {
   const todayDayIndex = new Date().getDay();
   const todayKey = DAYS[todayDayIndex === 0 ? 6 : todayDayIndex - 1];
 
-  const totalMinutes = trainingLogs.reduce((sum, l) => sum + l.duration, 0);
+  const totalMinutes = trainingLogs.reduce((sum: number, l) => sum + l.duration, 0);
   const completedCount = trainingLogs.filter((l) => l.completed).length;
 
   async function toggleComplete(id: number, completed: boolean) {

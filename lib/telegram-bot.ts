@@ -45,7 +45,7 @@ function scheduleWeeklySummary(bot: TelegramBot) {
       const workouts = await prisma.trainingLog.findMany({ where: { date: { gte: days[0] }, completed: true } });
       const user = await prisma.user.findFirst();
 
-      const totalCal = logs.reduce((s, l) => s + l.calories, 0);
+      const totalCal = logs.reduce((s: number, l) => s + l.calories, 0);
       const avgCal = Math.round(totalCal / 7);
       const logDays = new Set(logs.map(l => l.date)).size;
 
@@ -104,7 +104,7 @@ const MEAL_NAME: Record<string, string> = {
 async function getCaloriesSummary(today: string): Promise<string> {
   const user = await prisma.user.findFirst();
   const logs = await prisma.foodLog.findMany({ where: { date: today } });
-  const totalCal = Math.round(logs.reduce((sum, l) => sum + l.calories, 0));
+  const totalCal = Math.round(logs.reduce((sum: number, l) => sum + l.calories, 0));
 
   if (!user) return `📊 今日摄入：${totalCal} 卡`;
 
