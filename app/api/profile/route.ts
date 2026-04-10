@@ -1,4 +1,3 @@
-export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
@@ -16,7 +15,6 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const existing = await prisma.user.findFirst();
 
-    // Partial update: only apply fields present in the request body
     const data: Record<string, unknown> = {};
     if (body.name !== undefined) data.name = body.name || "用户";
     if (body.height !== undefined) data.height = body.height;

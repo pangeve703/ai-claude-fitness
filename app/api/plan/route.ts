@@ -1,4 +1,3 @@
-export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { generateDietPlan, generateTrainingPlan } from "@/lib/claude";
@@ -46,7 +45,6 @@ export async function POST(req: NextRequest) {
       content = await generateTrainingPlan(profile);
     }
 
-    // Extract JSON from response
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     const jsonContent = jsonMatch ? jsonMatch[0] : content;
 

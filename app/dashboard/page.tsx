@@ -1,4 +1,3 @@
-export const dynamic = "force-dynamic";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import NavBar from "@/components/NavBar";
@@ -6,8 +5,8 @@ import DashboardClient from "./DashboardClient";
 
 function getWeekStart(date: Date): Date {
   const d = new Date(date);
-  const day = d.getDay(); // 0=Sun, 1=Mon ...
-  const diff = day === 0 ? -6 : 1 - day; // Monday
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
   d.setDate(d.getDate() + diff);
   d.setHours(0, 0, 0, 0);
   return d;
@@ -43,7 +42,6 @@ export default async function DashboardPage() {
     orderBy: { createdAt: "desc" },
   });
 
-  // Week lock: disable plan generation if already generated this week
   const dietLockedUntil = latestDietPlan && new Date(latestDietPlan.createdAt) >= weekStart
     ? nextMonday(now)
     : null;
@@ -67,7 +65,6 @@ export default async function DashboardPage() {
   if (user.goal === "lose_fat") targetCalories -= 500;
   else if (user.goal === "build_muscle") targetCalories += 300;
 
-  // Last 7 days calorie chart data
   const chartDays: string[] = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(now);
@@ -86,7 +83,6 @@ export default async function DashboardPage() {
   const chartData = chartDays.map((date) => {
     const dayLogs = weekLogs.filter((l) => l.date === date);
     const consumed = Math.round(dayLogs.reduce((sum: number, l) => sum + l.calories, 0));
-    // Parse burned calories from workout notes JSON
     const dayWorkouts = weekWorkouts.filter((w) => w.date === date);
     let burned = 0;
     for (const w of dayWorkouts) {

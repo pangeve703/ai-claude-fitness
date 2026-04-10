@@ -22,7 +22,9 @@
       "Bash(git commit:*)",
       "Bash(pkill -f \"prisma db push\")",
       "Bash(curl -s http://localhost:3000/api/profile echo \"\" pkill -f \"next dev\")",
-      "WebFetch(domain:vercel.com)"
+      "WebFetch(domain:vercel.com)",
+      "Bash(DATABASE_URL=\"postgresql://neondb_owner:npg_lft1nYw6oQmR@ep-gentle-cell-amqkpfx6-pooler.c-5.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require\" npx prisma db push)",
+      "Bash(DATABASE_URL=\"postgresql://neondb_owner:npg_lft1nYw6oQmR@ep-gentle-cell-amqkpfx6-pooler.c-5.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require\" npx prisma generate)"
     ],
     "additionalDirectories": [
       "/private/tmp"

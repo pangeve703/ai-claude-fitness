@@ -1,8 +1,7 @@
-export const dynamic = "force-dynamic";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
 
@@ -14,7 +13,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ logs });
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   const body = await req.json();
   const log = await prisma.trainingLog.create({
     data: {
@@ -29,7 +28,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ log });
 }
 
-export async function PATCH(req: NextRequest) {
+export async function PATCH(req: Request) {
   const body = await req.json();
   const log = await prisma.trainingLog.update({
     where: { id: body.id },
