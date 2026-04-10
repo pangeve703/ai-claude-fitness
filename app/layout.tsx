@@ -16,17 +16,14 @@ export default function RootLayout({
     <html lang="zh-TW" className="h-full">
       <head>
         {/* Anti-flash: apply saved theme before first paint */}
-        <Script
+        {/* <script
           id="theme-loader"
-          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.classList.add('dark');}catch(e){}})()`,
           }}
-        />
+        /> */}
       </head>
-      <body className="min-h-full flex flex-col bg-slate-50 dark:bg-slate-900 transition-colors">
-        {children}
-      </body>
+      <body className="min-h-full flex flex-col bg-slate-50 dark:bg-slate-900 transition-colors">{children}</body>
     </html>
   );
 }
