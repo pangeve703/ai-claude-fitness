@@ -47,14 +47,20 @@ function scheduleWeeklySummary(bot: TelegramBot) {
 
       const totalCal = logs.reduce((s: number, l) => s + l.calories, 0);
       const avgCal = Math.round(totalCal / 7);
-      const logDays = new Set(logs.map(l => l.date)).size;
+      const logDays = new Set(logs.map((l) => l.date)).size;
 
       const bmr = user
-        ? (user.gender === "male"
+        ? user.gender === "male"
           ? 10 * user.weight + 6.25 * user.height - 5 * user.age + 5
-          : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161)
+          : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161
         : 1500;
-      const multipliers: Record<string, number> = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9 };
+      const multipliers: Record<string, number> = {
+        sedentary: 1.2,
+        light: 1.375,
+        moderate: 1.55,
+        active: 1.725,
+        very_active: 1.9,
+      };
       const tdee = Math.round(bmr * (multipliers[user?.activityLevel || "moderate"] || 1.55));
 
       const msg = `📊 *本周总结（${days[0].slice(5)} — ${days[6].slice(5)}）*
@@ -143,7 +149,8 @@ async function getQuickFoods() {
   });
   const freq: Record<string, { count: number; calories: number; protein: number; carbs: number; fat: number }> = {};
   for (const l of logs) {
-    if (!freq[l.foodName]) freq[l.foodName] = { count: 0, calories: l.calories, protein: l.protein, carbs: l.carbs, fat: l.fat };
+    if (!freq[l.foodName])
+      freq[l.foodName] = { count: 0, calories: l.calories, protein: l.protein, carbs: l.carbs, fat: l.fat };
     freq[l.foodName].count++;
   }
   return Object.entries(freq)
@@ -154,7 +161,9 @@ async function getQuickFoods() {
 
 function setupHandlers(bot: TelegramBot) {
   // Track chatId for weekly push
-  bot.on("message", (msg) => { if (msg.chat?.id) lastChatId = msg.chat.id; });
+  bot.on("message", (msg) => {
+    if (msg.chat?.id) lastChatId = msg.chat.id;
+  });
 
   // 欢迎命令
   bot.onText(/\/start/, async (msg) => {
@@ -207,10 +216,12 @@ function setupHandlers(bot: TelegramBot) {
       await bot.sendMessage(chatId, "还没有足够的记录。先发送食物照片或描述来建立你的常用食物库！");
       return;
     }
-    const keyboard = foods.map(f => [{
-      text: `${f.name} (${Math.round(f.calories)}卡)`,
-      callback_data: `ql:${f.name}:${f.calories}:${f.protein}:${f.carbs}:${f.fat}`,
-    }]);
+    const keyboard = foods.map((f) => [
+      {
+        text: `${f.name} (${Math.round(f.calories)}卡)`,
+        callback_data: `ql:${f.name}:${f.calories}:${f.protein}:${f.carbs}:${f.fat}`,
+      },
+    ]);
     await bot.sendMessage(chatId, "⚡️ *快速记录常用食物*\n选择要记录的食物：", {
       parse_mode: "Markdown",
       reply_markup: { inline_keyboard: keyboard },
@@ -226,7 +237,9 @@ function setupHandlers(bot: TelegramBot) {
     const meal = getMealByHour();
     await prisma.foodLog.create({
       data: {
-        userId: 1, date: today, meal,
+        userId: 1,
+        date: today,
+        meal,
         foodName: name,
         calories: parseFloat(cal),
         protein: parseFloat(prot),
@@ -237,7 +250,8 @@ function setupHandlers(bot: TelegramBot) {
     });
     const calSummary = await getCaloriesSummary(today);
     await bot.answerCallbackQuery(query.id);
-    await bot.sendMessage(chatId,
+    await bot.sendMessage(
+      chatId,
       `✅ 已记录 *${name}* 到${MEAL_NAME[meal]}\n🔥 ${Math.round(parseFloat(cal))} 卡\n\n${calSummary}`,
       { parse_mode: "Markdown" }
     );
@@ -292,7 +306,10 @@ function setupHandlers(bot: TelegramBot) {
       const logs = await prisma.foodLog.findMany({ where: { date: today } });
 
       const totals = logs.reduce(
-        (acc, log) => ({
+        (
+          acc: { calories: number; protein: number; carbs: number; fat: number },
+          log: { calories: number; protein: number; carbs: number; fat: number }
+        ) => ({
           calories: acc.calories + log.calories,
           protein: acc.protein + log.protein,
           carbs: acc.carbs + log.carbs,
@@ -325,10 +342,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
   bot.on("photo", async (msg) => {
     const chatId = msg.chat.id;
 
-    const processingMsg = await bot.sendMessage(
-      chatId,
-      "🔍 正在分析食物图片，请稍候..."
-    );
+    const processingMsg = await bot.sendMessage(chatId, "🔍 正在分析食物图片，请稍候...");
 
     try {
       const photos = msg.photo!;
@@ -366,13 +380,14 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           result.pace && `⚡️ 配速：${result.pace}`,
           result.heartRate && `❤️ 心率：${result.heartRate}`,
           result.caloriesBurned && `🔥 消耗：${result.caloriesBurned} 卡`,
-        ].filter(Boolean).join("\n");
+        ]
+          .filter(Boolean)
+          .join("\n");
 
         await bot.editMessageText(
           `✅ *已记录运动！*\n\n🏃 *${result.activity}*（${result.duration} 分钟）\n${rows}\n\n📊 *数据摘要*\n${result.details}\n\n💡 *AI 建议*\n${result.suggestions}`,
           { chat_id: chatId, message_id: processingMsg.message_id, parse_mode: "Markdown" }
         );
-
       } else if (result.type === "food") {
         const caption = msg.caption || "";
         const meal = detectMealFromText(caption) || getMealByHour();
@@ -396,12 +411,11 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           `✅ *已记录 ${MEAL_NAME[meal]}！*\n\n🍽 *${result.foodName}*\n${result.description}\n\n🔥 卡路里：*${result.calories}* 卡\n🥩 蛋白质：${result.protein}g\n🍞 碳水：${result.carbs}g\n🧈 脂肪：${result.fat}g\n\n${calSummary}`,
           { chat_id: chatId, message_id: processingMsg.message_id, parse_mode: "Markdown" }
         );
-
       } else {
-        await bot.editMessageText(
-          "❓ 无法识别图片，请发送食物照片或运动App截图（如跑步、游泳记录）。",
-          { chat_id: chatId, message_id: processingMsg.message_id }
-        );
+        await bot.editMessageText("❓ 无法识别图片，请发送食物照片或运动App截图（如跑步、游泳记录）。", {
+          chat_id: chatId,
+          message_id: processingMsg.message_id,
+        });
       }
     } catch (err) {
       const error = err as { status?: number; message?: string };
@@ -424,10 +438,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
     const chatId = msg.chat.id;
 
     if (text.length < 2) {
-      await bot.sendMessage(
-        chatId,
-        "📸 请发送食物照片，或描述你吃了什么，例如：「早餐吃了一碗燕麦粥」"
-      );
+      await bot.sendMessage(chatId, "📸 请发送食物照片，或描述你吃了什么，例如：「早餐吃了一碗燕麦粥」");
       return;
     }
 
@@ -447,11 +458,9 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           where: { id: last.id },
           data: { meal: standaloneKeyword },
         });
-        await bot.sendMessage(
-          chatId,
-          `✅ 已将「${last.foodName}」更新为 *${MEAL_NAME[standaloneKeyword]}*`,
-          { parse_mode: "Markdown" }
-        );
+        await bot.sendMessage(chatId, `✅ 已将「${last.foodName}」更新为 *${MEAL_NAME[standaloneKeyword]}*`, {
+          parse_mode: "Markdown",
+        });
       } else {
         await bot.sendMessage(chatId, `好的，下次记录将归入 *${MEAL_NAME[standaloneKeyword]}*`, {
           parse_mode: "Markdown",
@@ -467,10 +476,10 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
       const result = await analyzeTextFood(text);
 
       if (result.calories === 0) {
-        await bot.editMessageText(
-          "❓ 无法识别食物内容，请描述具体食物，例如：「午餐吃了鸡肉饭和青菜」",
-          { chat_id: chatId, message_id: processingMsg.message_id }
-        );
+        await bot.editMessageText("❓ 无法识别食物内容，请描述具体食物，例如：「午餐吃了鸡肉饭和青菜」", {
+          chat_id: chatId,
+          message_id: processingMsg.message_id,
+        });
         return;
       }
 

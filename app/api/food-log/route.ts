@@ -11,7 +11,10 @@ export async function GET(req: NextRequest) {
   });
 
   const totals = logs.reduce(
-    (acc, log) => ({
+    (
+      acc: { calories: number; protein: number; carbs: number; fat: number },
+      log: { calories: number; protein: number; carbs: number; fat: number }
+    ) => ({
       calories: acc.calories + log.calories,
       protein: acc.protein + log.protein,
       carbs: acc.carbs + log.carbs,
