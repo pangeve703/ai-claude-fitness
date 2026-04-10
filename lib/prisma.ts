@@ -22,7 +22,7 @@ function createPrismaClient() {
   }
 
   // PostgreSQL or fallback
-  return new PrismaClient();
+  return new PrismaClient({});
 }
 
 let cachedPrisma: PrismaClient | undefined;

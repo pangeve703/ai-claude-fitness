@@ -20,7 +20,9 @@
       "Bash(git remote:*)",
       "Bash(git push:*)",
       "Bash(git commit:*)",
-      "Bash(pkill -f \"prisma db push\")"
+      "Bash(pkill -f \"prisma db push\")",
+      "Bash(curl -s http://localhost:3000/api/profile echo \"\" pkill -f \"next dev\")",
+      "WebFetch(domain:vercel.com)"
     ],
     "additionalDirectories": [
       "/private/tmp"
