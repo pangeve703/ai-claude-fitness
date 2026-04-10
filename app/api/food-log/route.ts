@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
       },
     });
     return NextResponse.json({ log });
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: "记录失败" }, { status: 500 });
   }
 }

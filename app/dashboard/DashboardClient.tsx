@@ -290,7 +290,14 @@ export default function DashboardClient({
         ].map(({ type, emoji, label, bg, locked, hasplan, generating, spinner }) => (
           <button
             key={type}
-            onClick={() => { if (locked) return; hasplan ? router.push(`/${type === "diet" ? "diet" : "training"}`) : generatePlan(type); }}
+            onClick={() => {
+              if (locked) return;
+              if (hasplan) {
+                router.push(`/${type === "diet" ? "diet" : "training"}`);
+              } else {
+                generatePlan(type);
+              }
+            }}
             disabled={generating || !!locked}
             className="w-full bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow disabled:opacity-60"
           >

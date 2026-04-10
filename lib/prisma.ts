@@ -1,7 +1,5 @@
 import path from "path";
-// @ts-ignore - better-sqlite3 types
-import Database from "better-sqlite3";
-// @ts-ignore - adapter types
+// @ts-expect-error - adapter types
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 

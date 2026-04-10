@@ -5,7 +5,7 @@ export async function GET() {
   try {
     const user = await prisma.user.findFirst();
     return NextResponse.json({ user });
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: "获取用户失败" }, { status: 500 });
   }
 }

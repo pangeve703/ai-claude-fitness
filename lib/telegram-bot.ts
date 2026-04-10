@@ -403,10 +403,11 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           { chat_id: chatId, message_id: processingMsg.message_id }
         );
       }
-    } catch (err: any) {
-      console.error("分析图片失败:", err?.status, err?.message);
+    } catch (err) {
+      const error = err as { status?: number; message?: string };
+      console.error("分析图片失败:", error?.status, error?.message);
       const errMsg =
-        err?.status === 401
+        error?.status === 401
           ? "❌ API Key 无效，请联系管理员更新 Anthropic API Key。"
           : "❌ 分析失败，请重新发送图片或检查图片是否清晰。";
       await bot.editMessageText(errMsg, {
@@ -510,8 +511,9 @@ ${calSummary}`;
         message_id: processingMsg.message_id,
         parse_mode: "Markdown",
       });
-    } catch (err: any) {
-      console.error("分析文字失败:", err?.message);
+    } catch (err) {
+      const error = err as { message?: string };
+      console.error("分析文字失败:", error?.message);
       await bot.editMessageText("❌ 分析失败，请重试或发送食物照片", {
         chat_id: chatId,
         message_id: processingMsg.message_id,

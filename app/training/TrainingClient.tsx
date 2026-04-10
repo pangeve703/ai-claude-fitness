@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle, Circle, ChevronDown, ChevronUp, Clock, Flame } from "lucide-react";
+import { CheckCircle, Circle, ChevronDown, ChevronUp, Clock } from "lucide-react";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 const DAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -44,7 +44,7 @@ const INTENSITY_COLOR: Record<string, string> = {
   高: "bg-red-100 text-red-700",
 };
 
-export default function TrainingClient({ trainingLogs, plan, today, goal }: Props) {
+export default function TrainingClient({ trainingLogs, plan, today }: Props) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<"today" | "plan">("today");
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
