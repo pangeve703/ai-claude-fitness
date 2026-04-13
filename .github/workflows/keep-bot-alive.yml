@@ -2,7 +2,7 @@ name: Keep Bot Alive
 
 on:
   schedule:
-    # Run every 5 minutes
+    # Run every 5 minutes to keep bot alive
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
@@ -12,4 +12,9 @@ jobs:
     steps:
       - name: Ping bot startup endpoint
         run: |
-          curl -f https://your-app.vercel.app/api/startup || echo "Ping failed"
+          echo "🤖 Keeping bot alive..."
+          curl -f https://ai-claude-fitness.vercel.app/api/startup -w "\nStatus: %{http_code}\n" || echo "❌ Ping failed, will retry"
+
+      - name: Log success
+        if: success()
+        run: echo "✅ Bot ping successful at $(date)"
