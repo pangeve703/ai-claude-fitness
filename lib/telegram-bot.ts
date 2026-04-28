@@ -4,6 +4,30 @@ import { prisma } from "./prisma";
 
 let bot: TelegramBot | null = null;
 
+// node-telegram-bot-api dispatches events synchronously and does not await async
+// listeners. On a serverless platform the function suspends as soon as the
+// response is sent, killing in-flight handler work. We track each handler's
+// promise here so the webhook route can await them via awaitInFlight().
+const inFlight = new Set<Promise<unknown>>();
+
+function track<Args extends unknown[]>(
+  fn: (...args: Args) => Promise<unknown>
+): (...args: Args) => void {
+  return (...args: Args) => {
+    const p = fn(...args).catch((err) => {
+      console.error("Telegram handler error:", err);
+    });
+    inFlight.add(p);
+    p.finally(() => inFlight.delete(p));
+  };
+}
+
+export async function awaitInFlight(): Promise<void> {
+  while (inFlight.size > 0) {
+    await Promise.allSettled([...inFlight]);
+  }
+}
+
 export function getBot(): TelegramBot {
   if (!bot) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -103,7 +127,7 @@ async function getQuickFoods() {
 
 function setupHandlers(bot: TelegramBot) {
   // 欢迎命令
-  bot.onText(/\/start/, async (msg) => {
+  bot.onText(/\/start/, track(async (msg) => {
     try {
       const chatId = msg.chat.id;
       await bot.sendMessage(
@@ -122,9 +146,9 @@ function setupHandlers(bot: TelegramBot) {
     } catch (err) {
       console.error("Error in /start handler:", err);
     }
-  });
+  }));
 
-  bot.onText(/\/help/, async (msg) => {
+  bot.onText(/\/help/, track(async (msg) => {
     await bot.sendMessage(
       msg.chat.id,
       `📖 *使用说明*
@@ -147,10 +171,10 @@ function setupHandlers(bot: TelegramBot) {
 /start - 欢迎信息`,
       { parse_mode: "Markdown" }
     );
-  });
+  }));
 
   // 快速记录常用食物
-  bot.onText(/\/quick/, async (msg) => {
+  bot.onText(/\/quick/, track(async (msg) => {
     const chatId = msg.chat.id;
     const foods = await getQuickFoods();
     if (foods.length === 0) {
@@ -167,10 +191,10 @@ function setupHandlers(bot: TelegramBot) {
       parse_mode: "Markdown",
       reply_markup: { inline_keyboard: keyboard },
     });
-  });
+  }));
 
   // Handle quick log callback
-  bot.on("callback_query", async (query) => {
+  bot.on("callback_query", track(async (query) => {
     if (!query.data?.startsWith("ql:") || !query.message) return;
     const [, name, cal, prot, carbs, fat] = query.data.split(":");
     const chatId = query.message.chat.id;
@@ -196,10 +220,10 @@ function setupHandlers(bot: TelegramBot) {
       `✅ 已记录 *${name}* 到${MEAL_NAME[meal]}\n🔥 ${Math.round(parseFloat(cal))} 卡\n\n${calSummary}`,
       { parse_mode: "Markdown" }
     );
-  });
+  }));
 
   // 今日记录
-  bot.onText(/\/today/, async (msg) => {
+  bot.onText(/\/today/, track(async (msg) => {
     const chatId = msg.chat.id;
     try {
       const today = getTodayString();
@@ -237,10 +261,10 @@ function setupHandlers(bot: TelegramBot) {
       console.error(err);
       await bot.sendMessage(chatId, "❌ 获取记录失败，请稍后重试。");
     }
-  });
+  }));
 
   // 今日摘要
-  bot.onText(/\/summary/, async (msg) => {
+  bot.onText(/\/summary/, track(async (msg) => {
     const chatId = msg.chat.id;
     try {
       const today = getTodayString();
@@ -277,10 +301,10 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
       console.error(err);
       await bot.sendMessage(chatId, "❌ 获取摘要失败");
     }
-  });
+  }));
 
   // 处理照片
-  bot.on("photo", async (msg) => {
+  bot.on("photo", track(async (msg) => {
     const chatId = msg.chat.id;
 
     const processingMsg = await bot.sendMessage(chatId, "🔍 正在分析食物图片，请稍候...");
@@ -370,10 +394,10 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
         message_id: processingMsg.message_id,
       });
     }
-  });
+  }));
 
   // 处理文字（食物描述或餐别关键字）
-  bot.on("message", async (msg) => {
+  bot.on("message", track(async (msg) => {
     try {
       if (msg.photo || msg.text?.startsWith("/")) return;
       const text = (msg.text || "").trim();
@@ -478,5 +502,5 @@ ${calSummary}`;
     } catch (err) {
       console.error("Error in text message handler:", err);
     }
-  });
+  }));
 }
