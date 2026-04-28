@@ -53,6 +53,13 @@ export default async function DashboardPage() {
 
   const todayCalories = foodLogs.reduce((sum: number, log) => sum + log.calories, 0);
   const completedWorkouts = trainingLogs.filter((l) => l.completed).length;
+  let todayBurned = 0;
+  for (const w of trainingLogs) {
+    try {
+      const n = JSON.parse(w.notes || "{}");
+      todayBurned += n.caloriesBurned || 0;
+    } catch {}
+  }
 
   const bmi = user.weight / ((user.height / 100) ** 2);
 
@@ -102,6 +109,7 @@ export default async function DashboardPage() {
       <DashboardClient
         user={user}
         todayCalories={todayCalories}
+        todayBurned={Math.round(todayBurned)}
         targetCalories={targetCalories}
         completedWorkouts={completedWorkouts}
         totalWorkouts={trainingLogs.length}

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import {
   Flame, Dumbbell, Scale, Bot, ChevronRight, AlertCircle,
   Eye, EyeOff, Pencil, Check, X, Lock, ChevronDown, ChevronUp,
+  Utensils, Activity, Target,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine,
@@ -32,6 +33,7 @@ interface FoodLog { calories: number; foodName: string; meal: string; protein: n
 interface Props {
   user: { name: string; weight: number; height: number; goal: string; targetWeight?: number | null; };
   todayCalories: number;
+  todayBurned: number;
   targetCalories: number;
   completedWorkouts: number;
   totalWorkouts: number;
@@ -45,7 +47,7 @@ interface Props {
 }
 
 export default function DashboardClient({
-  user, todayCalories, targetCalories, completedWorkouts, totalWorkouts,
+  user, todayCalories, todayBurned, targetCalories, completedWorkouts, totalWorkouts,
   foodLogs, bmi, hasDietPlan, hasTrainingPlan, dietLockedUntil, trainingLockedUntil, chartData,
 }: Props) {
   const router = useRouter();
@@ -96,9 +98,11 @@ export default function DashboardClient({
   const today = new Date().toLocaleDateString("zh-TW", { month: "long", day: "numeric", weekday: "long" });
   const bmiCategory = bmi < 18.5 ? "偏瘦" : bmi < 24 ? "正常" : bmi < 28 ? "偏重" : "肥胖";
   const consumed = Math.round(todayCalories);
-  const deficit = targetCalories - consumed;
-  const progress = Math.min(consumed / targetCalories, 1);
-  const isOver = deficit < 0;
+  const burned = Math.round(todayBurned);
+  const net = consumed - burned;
+  const remaining = targetCalories - net;
+  const progress = Math.min(Math.max(net / targetCalories, 0), 1);
+  const isOver = remaining < 0;
 
   // Group food logs by meal
   const byMeal: Record<string, FoodLog[]> = {};
@@ -132,24 +136,54 @@ export default function DashboardClient({
             <Flame size={20} className="text-orange-500" />
             <span className="font-semibold text-slate-800 dark:text-slate-100">今日热量</span>
           </div>
-          <span className="text-sm text-slate-500 dark:text-slate-400">目标 {targetCalories} 卡</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400">目标 {targetCalories} 卡</span>
         </div>
-        <div className="flex items-end justify-between mb-2">
+
+        {/* Big remaining number */}
+        <div className="flex items-end justify-between mb-3">
           <div>
-            <span className="text-3xl font-bold text-slate-800 dark:text-slate-100">{consumed}</span>
-            <span className="text-sm text-slate-400 dark:text-slate-500 ml-1">/ {targetCalories} 卡</span>
+            <div className={`text-4xl font-bold leading-none ${isOver ? "text-red-500" : "text-slate-800 dark:text-slate-100"}`}>
+              {Math.abs(remaining)}
+            </div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              {isOver ? "已超出 (卡)" : "剩余可摄入 (卡)"}
+            </div>
           </div>
-          <div className={`text-right ${isOver ? "text-red-500" : "text-emerald-600 dark:text-emerald-400"}`}>
-            <div className="text-lg font-bold">{isOver ? "+" : "−"}{Math.abs(deficit)}</div>
-            <div className="text-xs">{isOver ? "超出" : "热量赤字"}</div>
+          <div className="text-right text-xs text-slate-500 dark:text-slate-400">
+            净摄入 <span className="font-semibold text-slate-700 dark:text-slate-200">{net}</span> / {targetCalories}
           </div>
         </div>
-        <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+
+        {/* Progress bar */}
+        <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden mb-3">
           <div
             className={`h-full rounded-full transition-all ${isOver ? "bg-red-400" : "bg-emerald-400"}`}
             style={{ width: `${progress * 100}%` }}
           />
         </div>
+
+        {/* Food / Exercise / Net breakdown */}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="bg-orange-50 dark:bg-orange-950/40 rounded-xl py-2 px-3 text-center">
+            <div className="flex items-center justify-center gap-1 text-orange-600 dark:text-orange-400 text-xs font-medium">
+              <Utensils size={12} /> 饮食
+            </div>
+            <div className="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">+{consumed}</div>
+          </div>
+          <div className="bg-blue-50 dark:bg-blue-950/40 rounded-xl py-2 px-3 text-center">
+            <div className="flex items-center justify-center gap-1 text-blue-600 dark:text-blue-400 text-xs font-medium">
+              <Activity size={12} /> 运动
+            </div>
+            <div className="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">−{burned}</div>
+          </div>
+          <div className="bg-emerald-50 dark:bg-emerald-950/40 rounded-xl py-2 px-3 text-center">
+            <div className="flex items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
+              <Target size={12} /> 目标
+            </div>
+            <div className="text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5">{targetCalories}</div>
+          </div>
+        </div>
+
         {/* Macro row */}
         {foodLogs.length > 0 && (
           <div className="flex gap-3 mt-3 pt-3 border-t border-slate-100 dark:border-slate-700">
