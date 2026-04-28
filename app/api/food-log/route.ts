@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 
 export async function GET(req: NextRequest) {
@@ -22,7 +23,8 @@ export async function GET(req: NextRequest) {
     }),
     { calories: 0, protein: 0, carbs: 0, fat: 0 }
   );
-
+  revalidatePath("/dashboard");
+  revalidatePath("/diet");
   return NextResponse.json({ logs, totals });
 }
 
@@ -42,6 +44,8 @@ export async function POST(req: NextRequest) {
         source: "manual",
       },
     });
+    revalidatePath("/dashboard");
+    revalidatePath("/diet");
     return NextResponse.json({ log });
   } catch {
     return NextResponse.json({ error: "记录失败" }, { status: 500 });
@@ -53,5 +57,7 @@ export async function DELETE(req: NextRequest) {
   const id = parseInt(searchParams.get("id") || "0");
 
   await prisma.foodLog.delete({ where: { id } });
+  revalidatePath("/dashboard");
+  revalidatePath("/diet");
   return NextResponse.json({ success: true });
 }

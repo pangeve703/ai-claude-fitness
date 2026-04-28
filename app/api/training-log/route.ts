@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 
 export async function GET(req: Request) {
@@ -25,6 +26,8 @@ export async function POST(req: Request) {
       notes: body.notes,
     },
   });
+  revalidatePath("/dashboard");
+  revalidatePath("/training");
   return NextResponse.json({ log });
 }
 
@@ -34,5 +37,7 @@ export async function PATCH(req: Request) {
     where: { id: body.id },
     data: { completed: body.completed },
   });
+  revalidatePath("/dashboard");
+  revalidatePath("/training");
   return NextResponse.json({ log });
 }
