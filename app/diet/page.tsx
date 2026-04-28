@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import NavBar from "@/components/NavBar";
 import DietClient from "./DietClient";
 
+export const dynamic = "force-dynamic";
+
 export default async function DietPage() {
   const user = await prisma.user.findFirst();
   if (!user) redirect("/setup");

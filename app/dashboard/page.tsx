@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import NavBar from "@/components/NavBar";
 import DashboardClient from "./DashboardClient";
 
+export const dynamic = "force-dynamic";
+
 function getWeekStart(date: Date): Date {
   const d = new Date(date);
   const day = d.getDay();

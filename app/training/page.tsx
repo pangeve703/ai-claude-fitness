@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import NavBar from "@/components/NavBar";
 import TrainingClient from "./TrainingClient";
 
+export const dynamic = "force-dynamic";
+
 export default async function TrainingPage() {
   const user = await prisma.user.findFirst();
   if (!user) redirect("/setup");
