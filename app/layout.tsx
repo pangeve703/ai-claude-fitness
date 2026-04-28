@@ -7,24 +7,11 @@ export const metadata: Metadata = {
   description: "个性化饮食与训练计划，Telegram 照片记录卡路里",
 };
 
-async function InitializeTelegramBot() {
-  try {
-    await fetch(`${process.env.VERCEL_URL ? "https://" + process.env.VERCEL_URL : "http://localhost:3000"}/api/startup`, {
-      method: "GET",
-    });
-  } catch {
-    // Silent fail - bot will initialize on first use
-  }
-  return null;
-}
-
 export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  await InitializeTelegramBot();
-
   return (
     <html lang="zh-TW" className="h-full">
       <head>

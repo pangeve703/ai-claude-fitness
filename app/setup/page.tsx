@@ -59,13 +59,6 @@ export default function SetupPage() {
         throw new Error(`Profile save failed: ${profileRes.statusText}`);
       }
 
-      // Try to start telegram bot (optional)
-      try {
-        await fetch("/api/bot-start", { method: "POST" });
-      } catch (botErr) {
-        console.warn("Telegram bot init failed:", botErr);
-      }
-
       router.push("/dashboard");
     } catch (err) {
       console.error("Setup error:", err);

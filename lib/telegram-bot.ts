@@ -3,8 +3,6 @@ import { analyzeImage, analyzeTextFood } from "./claude";
 import { prisma } from "./prisma";
 
 let bot: TelegramBot | null = null;
-let lastChatId: number | null = null;
-let lastWeeklySummaryWeek = -1;
 
 export function getBot(): TelegramBot {
   if (!bot) {
@@ -14,86 +12,14 @@ export function getBot(): TelegramBot {
       throw new Error("TELEGRAM_BOT_TOKEN not configured");
     }
 
-    bot = new TelegramBot(token, { polling: true });
-
-    // Add error handlers
-    bot.on("error", (error) => {
-      console.error("🔴 Bot error:", error);
-    });
-
-    bot.on("polling_error", (error) => {
-      console.error("🔴 Polling error:", error);
-    });
+    // Webhook mode: no polling, no built-in HTTP server. Updates are delivered
+    // via the /api/telegram/webhook route, which calls bot.processUpdate().
+    bot = new TelegramBot(token, { polling: false, webHook: false });
 
     setupHandlers(bot);
-    console.log("🤖 Telegram Bot 已启动（轮询模式）");
-    scheduleWeeklySummary(bot);
+    console.log("🤖 Telegram Bot 已启动（Webhook 模式）");
   }
   return bot;
-}
-
-function getWeekNumber(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
-  const week1 = new Date(d.getFullYear(), 0, 4);
-  return 1 + Math.round(((d.getTime() - week1.getTime()) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
-}
-
-function scheduleWeeklySummary(bot: TelegramBot) {
-  setInterval(async () => {
-    const now = new Date();
-    const isSunday = now.getDay() === 0;
-    const hour = now.getHours();
-    const week = getWeekNumber();
-    if (!isSunday || hour !== 20 || week === lastWeeklySummaryWeek || !lastChatId) return;
-    lastWeeklySummaryWeek = week;
-
-    try {
-      // Get last 7 days data
-      const days: string[] = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        days.push(d.toISOString().split("T")[0]);
-      }
-      const logs = await prisma.foodLog.findMany({ where: { date: { gte: days[0] } } });
-      const workouts = await prisma.trainingLog.findMany({ where: { date: { gte: days[0] }, completed: true } });
-      const user = await prisma.user.findFirst();
-
-      const totalCal = logs.reduce((s: number, l) => s + l.calories, 0);
-      const avgCal = Math.round(totalCal / 7);
-      const logDays = new Set(logs.map((l) => l.date)).size;
-
-      const bmr = user
-        ? user.gender === "male"
-          ? 10 * user.weight + 6.25 * user.height - 5 * user.age + 5
-          : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161
-        : 1500;
-      const multipliers: Record<string, number> = {
-        sedentary: 1.2,
-        light: 1.375,
-        moderate: 1.55,
-        active: 1.725,
-        very_active: 1.9,
-      };
-      const tdee = Math.round(bmr * (multipliers[user?.activityLevel || "moderate"] || 1.55));
-
-      const msg = `📊 *本周总结（${days[0].slice(5)} — ${days[6].slice(5)}）*
-
-🔥 平均每日摄入：${avgCal} 卡（目标 ${tdee} 卡）
-📅 有记录天数：${logDays} / 7 天
-💪 完成训练：${workouts.length} 次
-
-${avgCal < tdee ? "✅ 本周保持热量赤字，继续保持！" : "⚠️ 本周摄入略高，下周注意饮食控制。"}
-
-发送 /quick 快速记录常用食物`;
-
-      await bot.sendMessage(lastChatId, msg, { parse_mode: "Markdown" });
-    } catch (e) {
-      console.error("Weekly summary error:", e);
-    }
-  }, 60 * 60 * 1000); // check every hour
 }
 
 function getTodayString(): string {
@@ -176,15 +102,6 @@ async function getQuickFoods() {
 }
 
 function setupHandlers(bot: TelegramBot) {
-  // Track chatId for weekly push
-  bot.on("message", (msg) => {
-    try {
-      if (msg.chat?.id) lastChatId = msg.chat.id;
-    } catch (err) {
-      console.error("Error tracking chat ID:", err);
-    }
-  });
-
   // 欢迎命令
   bot.onText(/\/start/, async (msg) => {
     try {

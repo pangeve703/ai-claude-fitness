@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Flame, Dumbbell, Scale, Bot, ChevronRight, AlertCircle,
@@ -49,8 +49,6 @@ export default function DashboardClient({
   foodLogs, bmi, hasDietPlan, hasTrainingPlan, dietLockedUntil, trainingLockedUntil, chartData,
 }: Props) {
   const router = useRouter();
-
-  useEffect(() => { fetch("/api/startup").catch(() => {}); }, []);
 
   const [generatingDiet, setGeneratingDiet] = useState(false);
   const [generatingTraining, setGeneratingTraining] = useState(false);
