@@ -44,12 +44,9 @@ export default async function DashboardPage() {
     orderBy: { createdAt: "desc" },
   });
 
-  const dietLockedUntil = latestDietPlan && new Date(latestDietPlan.createdAt) >= weekStart
-    ? nextMonday(now)
-    : null;
-  const trainingLockedUntil = latestTrainingPlan && new Date(latestTrainingPlan.createdAt) >= weekStart
-    ? nextMonday(now)
-    : null;
+  const dietLockedUntil = latestDietPlan && new Date(latestDietPlan.createdAt) >= weekStart ? nextMonday(now) : null;
+  const trainingLockedUntil =
+    latestTrainingPlan && new Date(latestTrainingPlan.createdAt) >= weekStart ? nextMonday(now) : null;
 
   const todayCalories = foodLogs.reduce((sum: number, log) => sum + log.calories, 0);
   const completedWorkouts = trainingLogs.filter((l) => l.completed).length;
@@ -61,14 +58,18 @@ export default async function DashboardPage() {
     } catch {}
   }
 
-  const bmi = user.weight / ((user.height / 100) ** 2);
+  const bmi = user.weight / (user.height / 100) ** 2;
 
   const bmr =
     user.gender === "male"
       ? 10 * user.weight + 6.25 * user.height - 5 * user.age + 5
       : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161;
   const activityMultipliers: Record<string, number> = {
-    sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9,
+    sedentary: 1.2,
+    light: 1.375,
+    moderate: 1.55,
+    active: 1.725,
+    very_active: 1.9,
   };
   let targetCalories = Math.round(bmr * (activityMultipliers[user.activityLevel] || 1.55));
   if (user.goal === "lose_fat") targetCalories -= 500;
@@ -89,6 +90,24 @@ export default async function DashboardPage() {
     select: { date: true, notes: true },
   });
 
+  const weightSince = new Date(now);
+  weightSince.setDate(weightSince.getDate() - 30);
+  const weightSinceStr = weightSince.toISOString().split("T")[0];
+  let weightChartData: { date: string; weight: number }[] = [];
+  try {
+    const weightLogs = await prisma.weightLog.findMany({
+      where: { date: { gte: weightSinceStr } },
+      orderBy: { date: "asc" },
+      select: { date: true, weight: true },
+    });
+    weightChartData = weightLogs.map((l) => ({
+      date: `${parseInt(l.date.split("-")[1])}/${parseInt(l.date.split("-")[2])}`,
+      weight: l.weight,
+    }));
+  } catch {
+    // WeightLog table not yet created — falls back to empty chart
+  }
+
   const chartData = chartDays.map((date) => {
     const dayLogs = weekLogs.filter((l) => l.date === date);
     const consumed = Math.round(dayLogs.reduce((sum: number, l) => sum + l.calories, 0));
@@ -105,7 +124,7 @@ export default async function DashboardPage() {
   });
 
   return (
-    <div className="pb-20 min-h-screen bg-slate-50">
+    <div className="pb-20 min-h-screen bg-slate-50 dark:bg-slate-900">
       <DashboardClient
         user={user}
         todayCalories={todayCalories}
@@ -120,6 +139,8 @@ export default async function DashboardPage() {
         dietLockedUntil={dietLockedUntil}
         trainingLockedUntil={trainingLockedUntil}
         chartData={chartData}
+        weightChartData={weightChartData}
+        targetWeight={user.targetWeight ?? null}
       />
       <NavBar />
     </div>

@@ -23,6 +23,18 @@ model User {
   foodLogs      FoodLog[]
   trainingLogs  TrainingLog[]
   plans         Plan[]
+  weightLogs    WeightLog[]
+}
+
+model WeightLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @default(1)
+  user      User     @relation(fields: [userId], references: [id])
+  date      String
+  weight    Float
+  createdAt DateTime @default(now())
+
+  @@index([userId, date])
 }
 
 model FoodLog {

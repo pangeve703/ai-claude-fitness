@@ -319,7 +319,8 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
       const buffer = await response.arrayBuffer();
       const base64 = Buffer.from(buffer).toString("base64");
 
-      const result = await analyzeImage(base64, "image/jpeg");
+      const caption = msg.caption?.trim() || undefined;
+      const result = await analyzeImage(base64, "image/jpeg", caption);
       const today = getTodayString();
 
       if (result.type === "workout") {
@@ -354,8 +355,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           { chat_id: chatId, message_id: processingMsg.message_id, parse_mode: "Markdown" }
         );
       } else if (result.type === "food") {
-        const caption = msg.caption || "";
-        const meal = detectMealFromText(caption) || getMealByHour();
+        const meal = detectMealFromText(caption || "") || getMealByHour();
 
         await prisma.foodLog.create({
           data: {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 
 export async function GET() {
@@ -42,6 +43,19 @@ export async function POST(req: NextRequest) {
           targetWeight: body.targetWeight ?? null,
         },
       });
+    }
+
+    if (body.weight !== undefined && (!existing || existing.weight !== body.weight)) {
+      const today = new Date().toISOString().split("T")[0];
+      const sameDay = await prisma.weightLog.findFirst({
+        where: { userId: user.id, date: today },
+      });
+      if (sameDay) {
+        await prisma.weightLog.update({ where: { id: sameDay.id }, data: { weight: body.weight } });
+      } else {
+        await prisma.weightLog.create({ data: { userId: user.id, date: today, weight: body.weight } });
+      }
+      revalidatePath("/dashboard");
     }
 
     return NextResponse.json({ user });

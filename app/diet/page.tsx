@@ -31,7 +31,7 @@ export default async function DietPage() {
   );
 
   return (
-    <div className="pb-20 min-h-screen bg-slate-50">
+    <div className="pb-20 min-h-screen bg-slate-50 dark:bg-slate-900">
       <DietClient
         foodLogs={foodLogs}
         totals={totals}

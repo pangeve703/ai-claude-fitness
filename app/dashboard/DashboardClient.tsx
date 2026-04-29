@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine,
-  ResponsiveContainer, Legend,
+  ResponsiveContainer, Legend, LineChart, Line,
 } from "recharts";
 
 const GOAL_LABEL: Record<string, string> = {
@@ -28,6 +28,7 @@ const MEAL_LABEL: Record<string, string> = {
 const MEAL_ORDER = ["breakfast", "lunch", "snack", "dinner"];
 
 interface ChartDay { date: string; consumed: number; burned: number; target: number; }
+interface WeightPoint { date: string; weight: number; }
 interface FoodLog { calories: number; foodName: string; meal: string; protein: number; carbs: number; fat: number; }
 
 interface Props {
@@ -44,11 +45,14 @@ interface Props {
   dietLockedUntil: string | null;
   trainingLockedUntil: string | null;
   chartData: ChartDay[];
+  weightChartData: WeightPoint[];
+  targetWeight: number | null;
 }
 
 export default function DashboardClient({
   user, todayCalories, todayBurned, targetCalories, completedWorkouts, totalWorkouts,
   foodLogs, bmi, hasDietPlan, hasTrainingPlan, dietLockedUntil, trainingLockedUntil, chartData,
+  weightChartData, targetWeight,
 }: Props) {
   const router = useRouter();
 
@@ -282,7 +286,7 @@ export default function DashboardClient({
         )}
       </div>
 
-      {/* 7-Day Chart */}
+      {/* 7-Day Calorie Chart */}
       <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm">
         <h3 className="font-semibold text-slate-800 dark:text-slate-100 mb-3">近 7 天热量</h3>
         <ResponsiveContainer width="100%" height={160}>
@@ -299,6 +303,50 @@ export default function DashboardClient({
             <Bar dataKey="burned" fill="#60a5fa" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
+      </div>
+
+      {/* Weight History Chart */}
+      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-800 dark:text-slate-100">近 30 天体重</h3>
+          {weightChartData.length >= 2 && (() => {
+            const first = weightChartData[0].weight;
+            const last = weightChartData[weightChartData.length - 1].weight;
+            const diff = last - first;
+            const pos = diff > 0;
+            return (
+              <span className={`text-xs font-medium ${diff === 0 ? "text-slate-400" : pos ? "text-red-500" : "text-emerald-500"}`}>
+                {diff === 0 ? "持平" : `${pos ? "▲" : "▼"} ${Math.abs(diff).toFixed(1)} kg`}
+              </span>
+            );
+          })()}
+        </div>
+        {weightChartData.length === 0 ? (
+          <div className="text-center py-8 text-sm text-slate-400 dark:text-slate-500">
+            还没有体重记录<br />
+            <span className="text-xs">编辑上方体重即可开始追踪</span>
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={weightChartData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+              <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
+              <YAxis
+                tick={{ fontSize: 10, fill: "#94a3b8" }}
+                axisLine={false}
+                tickLine={false}
+                domain={["dataMin - 1", "dataMax + 1"]}
+              />
+              <Tooltip
+                contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", fontSize: 12 }}
+                formatter={(v) => [`${v} kg`, "体重"]}
+              />
+              {targetWeight != null && (
+                <ReferenceLine y={targetWeight} stroke="#a855f7" strokeDasharray="4 3" strokeWidth={1.5} label={{ value: `目标 ${targetWeight}`, position: "right", fontSize: 10, fill: "#a855f7" }} />
+              )}
+              <Line type="monotone" dataKey="weight" stroke="#a855f7" strokeWidth={2} dot={{ r: 3, fill: "#a855f7" }} activeDot={{ r: 5 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
       {/* Plan Error */}

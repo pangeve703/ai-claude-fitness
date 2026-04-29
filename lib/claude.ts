@@ -139,8 +139,19 @@ export type ImageAnalysisResult =
 
 export async function analyzeImage(
   imageBase64: string,
-  mimeType: string = "image/jpeg"
+  mimeType: string = "image/jpeg",
+  caption?: string
 ): Promise<ImageAnalysisResult> {
+  const trimmedCaption = caption?.trim();
+  const hintBlock = trimmedCaption
+    ? `
+
+用户附带的描述（可作为识别提示，例如食物名称、份量、品牌、烹调方式等）：
+"""${trimmedCaption}"""
+
+请优先采信描述中明确提到的食物名称与份量，并据此估算营养。如果描述与图片明显不符，以图片为准但在 description 中说明。`
+    : "";
+
   const response = await anthropic.messages.create({
     model: FAST_MODEL,
     max_tokens: 600,
@@ -160,7 +171,7 @@ export async function analyzeImage(
 
 如果是运动截图：{"type":"workout","activity":"活动名称","duration":分钟数字,"distance":"距离如5.2km","pace":"配速如5:30/km","heartRate":"平均心率如148bpm","caloriesBurned":数字,"details":"详细数据摘要","suggestions":"根据数据给出1-2句专业建议"}
 
-如果无法判断：{"type":"unknown"}`,
+如果无法判断：{"type":"unknown"}${hintBlock}`,
         },
       ],
     }],

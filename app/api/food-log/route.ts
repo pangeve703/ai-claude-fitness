@@ -52,6 +52,29 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    if (!body.id) return NextResponse.json({ error: "缺少 id" }, { status: 400 });
+    const log = await prisma.foodLog.update({
+      where: { id: body.id },
+      data: {
+        ...(body.meal !== undefined && { meal: body.meal }),
+        ...(body.foodName !== undefined && { foodName: body.foodName }),
+        ...(body.calories !== undefined && { calories: body.calories }),
+        ...(body.protein !== undefined && { protein: body.protein }),
+        ...(body.carbs !== undefined && { carbs: body.carbs }),
+        ...(body.fat !== undefined && { fat: body.fat }),
+      },
+    });
+    revalidatePath("/dashboard");
+    revalidatePath("/diet");
+    return NextResponse.json({ log });
+  } catch {
+    return NextResponse.json({ error: "更新失败" }, { status: 500 });
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const id = parseInt(searchParams.get("id") || "0");
