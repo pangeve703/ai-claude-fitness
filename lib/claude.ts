@@ -137,6 +137,30 @@ export type ImageAnalysisResult =
     }
   | { type: "unknown" };
 
+export type TextAnalysisResult =
+  | {
+      type: "food";
+      foodName: string;
+      calories: number;
+      protein: number;
+      carbs: number;
+      fat: number;
+      meal: string;
+      description: string;
+    }
+  | {
+      type: "workout";
+      activity: string;
+      duration: number;
+      distance?: string;
+      pace?: string;
+      heartRate?: string;
+      caloriesBurned?: number;
+      details: string;
+      suggestions: string;
+    }
+  | { type: "unknown" };
+
 export async function analyzeImage(
   imageBase64: string,
   mimeType: string = "image/jpeg",
@@ -174,6 +198,33 @@ export async function analyzeImage(
 如果无法判断：{"type":"unknown"}${hintBlock}`,
         },
       ],
+    }],
+  });
+
+  const text = response.content[0].type === "text" ? response.content[0].text : "";
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    return JSON.parse(match ? match[0] : text);
+  } catch {
+    return { type: "unknown" };
+  }
+}
+
+export async function analyzeTextEntry(description: string): Promise<TextAnalysisResult> {
+  const response = await anthropic.messages.create({
+    model: FAST_MODEL,
+    max_tokens: 500,
+    system: "你是一位营养师兼健身教练，请用中文回复，只输出 JSON 不要其他文字。",
+    messages: [{
+      role: "user",
+      content: `判断以下文字是在记录食物、运动/训练，还是无法判断，然后按对应格式输出 JSON：
+描述：${description}
+
+如果是食物：{"type":"food","foodName":"食物名称","calories":数字,"protein":数字克,"carbs":数字克,"fat":数字克,"meal":"breakfast或lunch或dinner或snack","description":"份量与食材简述"}
+
+如果是运动/训练：{"type":"workout","activity":"运动名称","duration":分钟数字，如果未知填0,"distance":"距离如5.2km，可省略","pace":"配速如5:30/km，可省略","heartRate":"平均心率如148bpm，可省略","caloriesBurned":数字，可省略,"details":"训练内容摘要","suggestions":"根据训练给出1-2句专业建议"}
+
+如果文字同时包含食物和运动，优先判断用户主要想记录的内容；如果无法判断：{"type":"unknown"}`,
     }],
   });
 
