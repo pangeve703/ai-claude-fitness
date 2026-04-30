@@ -1,5 +1,5 @@
 import TelegramBot from "node-telegram-bot-api";
-import { analyzeImage, analyzeTextEntry, type ImageAnalysisResult } from "./claude";
+import { analyzeImage, analyzeTextEntry, generateCoachReply, type ImageAnalysisResult } from "./claude";
 import { prisma } from "./prisma";
 
 let bot: TelegramBot | null = null;
@@ -88,6 +88,10 @@ function detectMealFromText(text: string): string | null {
   return null;
 }
 
+function looksLikeCoachQuestion(text: string): boolean {
+  return /[?？]|吗$|呢$|什么|怎么|如何|为什么|可不可以|能不能|要不要|应该|建议|推荐|适合|安排|计划|怎么办|还差|够不够/.test(text);
+}
+
 const MEAL_NAME: Record<string, string> = {
   breakfast: "早餐",
   lunch: "午餐",
@@ -167,6 +171,128 @@ async function getCaloriesSummary(today: string): Promise<string> {
     : `📊 今日摄入：${totalCal} / ${target} 卡\n${bar} 已超出 *${Math.abs(remaining)}* 卡`;
 }
 
+function getCalorieTarget(
+  user: { gender: string; weight: number; height: number; age: number; activityLevel: string; goal: string },
+  dietPlanContent?: string | null
+): number {
+  if (dietPlanContent) {
+    try {
+      const parsed = JSON.parse(dietPlanContent);
+      if (typeof parsed?.dailyCalories === "number" && parsed.dailyCalories > 0) {
+        return Math.round(parsed.dailyCalories);
+      }
+    } catch {}
+  }
+
+  const bmr =
+    user.gender === "male"
+      ? 10 * user.weight + 6.25 * user.height - 5 * user.age + 5
+      : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161;
+  const multipliers: Record<string, number> = {
+    sedentary: 1.2,
+    light: 1.375,
+    moderate: 1.55,
+    active: 1.725,
+    very_active: 1.9,
+  };
+  const tdee = Math.round(bmr * (multipliers[user.activityLevel] || 1.55));
+
+  if (user.goal === "lose_fat") return tdee - 500;
+  if (user.goal === "build_muscle") return tdee + 300;
+  return tdee;
+}
+
+function getPlanExcerpt(content: string | null | undefined): string | null {
+  if (!content) return null;
+  try {
+    return JSON.stringify(JSON.parse(content)).slice(0, 1200);
+  } catch {
+    return content.slice(0, 1200);
+  }
+}
+
+function formatWorkoutForCoach(log: { exercise: string; duration: number; completed: boolean; notes: string | null }): string {
+  const parts = [`${log.exercise} ${log.duration}分钟`, log.completed ? "已完成" : "未完成"];
+  try {
+    const notes = JSON.parse(log.notes || "{}");
+    if (notes.distance) parts.push(String(notes.distance));
+    if (notes.pace) parts.push(String(notes.pace));
+    if (notes.caloriesBurned) parts.push(`${notes.caloriesBurned}卡`);
+  } catch {}
+  return parts.join("，");
+}
+
+async function getCoachContext(today: string) {
+  const [user, foodLogs, trainingLogs, latestDietPlan, latestTrainingPlan] = await Promise.all([
+    prisma.user.findFirst(),
+    prisma.foodLog.findMany({
+      where: { date: today },
+      orderBy: { createdAt: "asc" },
+      select: { foodName: true, calories: true, protein: true, carbs: true, fat: true, meal: true },
+    }),
+    prisma.trainingLog.findMany({
+      where: { date: today },
+      orderBy: { createdAt: "asc" },
+      select: { exercise: true, duration: true, completed: true, notes: true },
+    }),
+    prisma.plan.findFirst({ where: { type: "diet" }, orderBy: { createdAt: "desc" } }),
+    prisma.plan.findFirst({ where: { type: "training" }, orderBy: { createdAt: "desc" } }),
+  ]);
+
+  const totals = foodLogs.reduce(
+    (acc, log) => ({
+      calories: acc.calories + log.calories,
+      protein: acc.protein + log.protein,
+      carbs: acc.carbs + log.carbs,
+      fat: acc.fat + log.fat,
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+
+  return {
+    profile: user
+      ? {
+          name: user.name,
+          height: user.height,
+          weight: user.weight,
+          age: user.age,
+          gender: user.gender,
+          activityLevel: user.activityLevel,
+          goal: user.goal,
+          targetWeight: user.targetWeight,
+        }
+      : null,
+    today: {
+      date: today,
+      ...totals,
+      targetCalories: user ? getCalorieTarget(user, latestDietPlan?.content) : null,
+      foods: foodLogs.slice(-10).map((log) => `${MEAL_NAME[log.meal] || log.meal} ${log.foodName} ${Math.round(log.calories)}卡`),
+      workouts: trainingLogs.slice(-8).map(formatWorkoutForCoach),
+    },
+    latestDietPlan: getPlanExcerpt(latestDietPlan?.content),
+    latestTrainingPlan: getPlanExcerpt(latestTrainingPlan?.content),
+  };
+}
+
+async function sendCoachReply(
+  bot: TelegramBot,
+  chatId: number,
+  message: string,
+  editMessageId?: number
+): Promise<void> {
+  await bot.sendChatAction(chatId, "typing");
+  const today = getTodayString();
+  const context = await getCoachContext(today);
+  const reply = await generateCoachReply(message, context);
+
+  if (editMessageId) {
+    await bot.editMessageText(reply, { chat_id: chatId, message_id: editMessageId });
+    return;
+  }
+
+  await bot.sendMessage(chatId, reply);
+}
+
 async function getQuickFoods() {
   // Top 5 most frequently logged foods (by count, last 30 days)
   const since = new Date();
@@ -200,10 +326,12 @@ function setupHandlers(bot: TelegramBot) {
 📸 发送食物照片，我会拆分食材、估算份量和卡路里。照片不清楚时会先问你确认，不会直接乱记。
 ✏️ 照片加说明会更准，例如：「午餐，饭半碗，鸡胸约120g，少酱」。也可以直接输入你吃了什么。
 🏃 或输入你完成的运动，例如：「跑步 30 分钟 5 公里」
+💬 也可以直接聊天问我饮食、训练、减脂、增肌建议；如果怕被当成记录，用 /chat 开头。
 
 📋 指令列表：
 /today - 查看今日饮食记录
 /summary - 查看今日营养总结
+/chat - 和 AI 教练聊天
 /help - 显示帮助`,
         { parse_mode: "Markdown" }
       );
@@ -240,12 +368,42 @@ function setupHandlers(bot: TelegramBot) {
 • 「跑步 30 分钟 5 公里」
 • 「深蹲 4 组，每组 12 次」
 
+💬 *AI 教练聊天*
+直接问问题即可，例如：
+• 「今晚吃什么比较适合？」
+• 「我今天还要不要跑步？」
+也可以用 /chat 明确进入聊天：
+• /chat 帮我看一下今天还差什么营养
+
 📋 *指令*
 /today - 今日饮食记录
 /summary - 今日营养摘要
+/chat - 和 AI 教练聊天
 /start - 欢迎信息`,
       { parse_mode: "Markdown" }
     );
+  }));
+
+  bot.onText(/^\/(?:chat|ask)(?:@\w+)?(?:\s+([\s\S]+))?$/, track(async (msg, match) => {
+    const chatId = msg.chat.id;
+    const question = match?.[1]?.trim();
+
+    if (!question) {
+      await bot.sendMessage(chatId, "你可以这样问我：/chat 今天晚餐吃什么比较适合？");
+      return;
+    }
+
+    const processingMsg = await bot.sendMessage(chatId, "💬 AI 教练思考中...");
+    try {
+      await sendCoachReply(bot, chatId, question, processingMsg.message_id);
+    } catch (err) {
+      const error = err as { status?: number; message?: string };
+      console.error("AI chat failed:", error?.status, error?.message);
+      await bot.editMessageText("❌ AI 教练暂时没回上来，请稍后再试。", {
+        chat_id: chatId,
+        message_id: processingMsg.message_id,
+      });
+    }
   }));
 
   // 快速记录常用食物
@@ -537,7 +695,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
     }
   }));
 
-  // 处理文字（食物、运动描述或餐别关键字）
+  // 处理文字（食物、运动描述、餐别关键字，或普通 AI 聊天）
   bot.on("message", track(async (msg) => {
     try {
       if (msg.photo || msg.text?.startsWith("/")) return;
@@ -581,17 +739,29 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
         return;
       }
 
-      // Treat as a food or workout description
-      const processingMsg = await bot.sendMessage(chatId, "🔍 正在分析文字记录...");
+      if (looksLikeCoachQuestion(text)) {
+        const processingMsg = await bot.sendMessage(chatId, "💬 AI 教练思考中...");
+        try {
+          await sendCoachReply(bot, chatId, text, processingMsg.message_id);
+        } catch (err) {
+          const error = err as { status?: number; message?: string };
+          console.error("AI chat failed:", error?.status, error?.message);
+          await bot.editMessageText("❌ AI 教练暂时没回上来，请稍后再试。", {
+            chat_id: chatId,
+            message_id: processingMsg.message_id,
+          });
+        }
+        return;
+      }
+
+      // Treat as a food/workout description first; unclear messages become chat.
+      const processingMsg = await bot.sendMessage(chatId, "🔍 正在判断是记录还是聊天...");
 
       try {
         const result = await analyzeTextEntry(text);
 
         if (result.type === "unknown") {
-          await bot.editMessageText("❓ 无法识别内容，请描述具体食物或运动，例如：「午餐吃了鸡肉饭」或「跑步30分钟」", {
-            chat_id: chatId,
-            message_id: processingMsg.message_id,
-          });
+          await sendCoachReply(bot, chatId, text, processingMsg.message_id);
           return;
         }
 
@@ -634,10 +804,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
         }
 
         if (result.calories === 0) {
-          await bot.editMessageText("❓ 无法识别食物内容，请描述具体食物，例如：「午餐吃了鸡肉饭和青菜」", {
-            chat_id: chatId,
-            message_id: processingMsg.message_id,
-          });
+          await sendCoachReply(bot, chatId, text, processingMsg.message_id);
           return;
         }
 

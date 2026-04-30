@@ -19,6 +19,22 @@ export interface UserProfile {
   targetWeight?: number | null;
 }
 
+export interface CoachChatContext {
+  profile?: UserProfile | null;
+  today?: {
+    date: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    targetCalories?: number | null;
+    foods: string[];
+    workouts: string[];
+  } | null;
+  latestDietPlan?: string | null;
+  latestTrainingPlan?: string | null;
+}
+
 const GOAL_MAP: Record<string, string> = {
   lose_fat: "减脂",
   run_speed: "提升跑步速度",
@@ -33,6 +49,88 @@ const ACTIVITY_MAP: Record<string, string> = {
   active: "高度活跃（每周6-7天运动）",
   very_active: "极度活跃（每天高强度运动）",
 };
+
+function parseChineseNumber(text: string): number | null {
+  const normalized = text.replace(/两/g, "二");
+  const digits: Record<string, number> = {
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+
+  if (normalized === "十") return 10;
+  if (normalized.startsWith("十")) return 10 + (digits[normalized[1]] || 0);
+  if (normalized.endsWith("十")) return (digits[normalized[0]] || 0) * 10;
+  if (normalized.includes("十")) {
+    const [tens, ones] = normalized.split("十");
+    return (digits[tens] || 0) * 10 + (digits[ones] || 0);
+  }
+  return digits[normalized] || null;
+}
+
+function getServingDivisor(caption: string | undefined): number | null {
+  if (!caption) return null;
+  const text = caption.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ");
+  const digitPatterns = [
+    /(?:divide|split)\s*(?:by|into|among|between)?\s*(\d{1,2})/,
+    /(?:share|shared|serves|serving|portion)\s*(?:by|into|among|between|with|for)?\s*(\d{1,2})\s*(?:people|persons|pax|servings|portions)?/,
+    /for\s*(\d{1,2})\s*(?:people|persons|pax|servings|portions)/,
+    /(\d{1,2})\s*(?:people|persons|pax|servings|portions|person portion|people portion)/,
+    /(?:分成|分为|除以|平均分|分给|分)\s*(\d{1,2})\s*(?:份|人)?/,
+    /(\d{1,2})\s*(?:人份|人吃|个人吃)/,
+  ];
+
+  for (const pattern of digitPatterns) {
+    const match = text.match(pattern);
+    const value = match ? Number(match[1]) : 0;
+    if (value >= 2 && value <= 20) return value;
+  }
+
+  const chinesePattern = text.match(/(?:分成|分为|除以|平均分|分给|分)\s*([一二三四五六七八九十两]{1,3})\s*(?:份|人)?|([一二三四五六七八九十两]{1,3})\s*(?:人份|人吃|个人吃)/);
+  const chineseValue = chinesePattern?.[1] || chinesePattern?.[2];
+  if (!chineseValue) return null;
+
+  const value = parseChineseNumber(chineseValue);
+  return value && value >= 2 && value <= 20 ? value : null;
+}
+
+function roundNutrition(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function divideFoodResult(result: ImageAnalysisResult, divisor: number | null): ImageAnalysisResult {
+  if (result.type !== "food" || !divisor) return result;
+
+  return {
+    ...result,
+    foodName: `${result.foodName}（1/${divisor}份）`,
+    calories: roundNutrition(result.calories / divisor),
+    protein: roundNutrition(result.protein / divisor),
+    carbs: roundNutrition(result.carbs / divisor),
+    fat: roundNutrition(result.fat / divisor),
+    description: `${result.description}\n已按说明平均分成 ${divisor} 份，本次记录为 1 份估算。`,
+    calorieRange: result.calorieRange
+      ? {
+          min: roundNutrition(result.calorieRange.min / divisor),
+          max: roundNutrition(result.calorieRange.max / divisor),
+        }
+      : result.calorieRange,
+    items: result.items?.map((item) => ({
+      ...item,
+      estimatedGrams: roundNutrition(item.estimatedGrams / divisor),
+      calories: roundNutrition(item.calories / divisor),
+      protein: roundNutrition(item.protein / divisor),
+      carbs: roundNutrition(item.carbs / divisor),
+      fat: roundNutrition(item.fat / divisor),
+    })),
+  };
+}
 
 function calcBMR(profile: UserProfile): number {
   if (profile.gender === "male") {
@@ -115,6 +213,54 @@ export async function generateTrainingPlan(profile: UserProfile): Promise<string
   return match ? match[0] : text;
 }
 
+export async function generateCoachReply(message: string, context: CoachChatContext): Promise<string> {
+  const profile = context.profile;
+  const today = context.today;
+  const profileText = profile
+    ? `姓名：${profile.name}
+性别：${profile.gender === "male" ? "男" : "女"}，年龄：${profile.age}岁
+身高：${profile.height}cm，体重：${profile.weight}kg
+活动量：${ACTIVITY_MAP[profile.activityLevel] || profile.activityLevel}
+目标：${GOAL_MAP[profile.goal] || profile.goal}${profile.targetWeight ? `，目标体重：${profile.targetWeight}kg` : ""}`
+    : "尚未建立个人资料";
+  const todayText = today
+    ? `日期：${today.date}
+今日摄入：${Math.round(today.calories)}${today.targetCalories ? ` / ${today.targetCalories}` : ""} 卡
+今日营养：蛋白质 ${Math.round(today.protein)}g，碳水 ${Math.round(today.carbs)}g，脂肪 ${Math.round(today.fat)}g
+今日食物：${today.foods.length > 0 ? today.foods.join("；") : "暂无记录"}
+今日训练：${today.workouts.length > 0 ? today.workouts.join("；") : "暂无记录"}`
+    : "暂无今日记录";
+  const dietPlan = context.latestDietPlan?.slice(0, 1200) || "暂无饮食计划";
+  const trainingPlan = context.latestTrainingPlan?.slice(0, 1200) || "暂无训练计划";
+
+  const response = await anthropic.messages.create({
+    model: FAST_MODEL,
+    max_tokens: 800,
+    system:
+      "你是用户的 Telegram AI 健身与营养教练。用简洁自然的中文回答，可以轻松一点但要专业。基于提供的个人资料、今日记录和计划给出具体建议。不要声称你已经记录了食物或训练，除非上下文明确显示已经记录。涉及疾病、受伤、药物或极端减重时，提醒咨询医生或专业人士。回复控制在 6 句以内，必要时用短列表。",
+    messages: [{
+      role: "user",
+      content: `用户消息：
+${message}
+
+个人资料：
+${profileText}
+
+今日状态：
+${todayText}
+
+最新饮食计划摘要：
+${dietPlan}
+
+最新训练计划摘要：
+${trainingPlan}`,
+    }],
+  });
+
+  const text = response.content[0].type === "text" ? response.content[0].text : "";
+  return text.trim() || "我在，但刚才没组织好回复。你可以再问我一次。";
+}
+
 export type ImageAnalysisResult =
   | {
       type: "food";
@@ -181,6 +327,7 @@ export async function analyzeImage(
   caption?: string
 ): Promise<ImageAnalysisResult> {
   const trimmedCaption = caption?.trim();
+  const servingDivisor = getServingDivisor(trimmedCaption);
   const hintBlock = trimmedCaption
     ? `
 
@@ -188,6 +335,13 @@ export async function analyzeImage(
 """${trimmedCaption}"""
 
 请优先采信描述中明确提到的食物名称与份量，并据此估算营养。如果描述与图片明显不符，以图片为准但在 description 中说明。`
+    : "";
+  const servingBlock = servingDivisor
+    ? `
+
+用户要求把图片中的整份食物平均分成 ${servingDivisor} 份。请注意：
+- JSON 数字仍然必须先输出图片中整份可见食物的总营养，不要自己除以 ${servingDivisor}。
+- 程序会在解析后自动换算成 1/${servingDivisor} 份并记录。`
     : "";
 
   const response = await anthropic.messages.create({
@@ -232,7 +386,7 @@ export async function analyzeImage(
 
 如果是运动截图：{"type":"workout","activity":"活动名称","duration":分钟数字,"distance":"距离如5.2km","pace":"配速如5:30/km","heartRate":"平均心率如148bpm","caloriesBurned":数字,"details":"详细数据摘要","suggestions":"根据数据给出1-2句专业建议"}
 
-如果无法判断：{"type":"unknown"}${hintBlock}`,
+如果无法判断：{"type":"unknown"}${hintBlock}${servingBlock}`,
         },
       ],
     }],
@@ -241,7 +395,8 @@ export async function analyzeImage(
   const text = response.content[0].type === "text" ? response.content[0].text : "";
   try {
     const match = text.match(/\{[\s\S]*\}/);
-    return JSON.parse(match ? match[0] : text);
+    const parsed = JSON.parse(match ? match[0] : text);
+    return divideFoodResult(parsed, servingDivisor);
   } catch {
     return { type: "unknown" };
   }
