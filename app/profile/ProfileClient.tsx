@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { User, Target, Activity, Trash2, Save, AlertTriangle } from "lucide-react";
+import { User, Target, Activity, Trash2, Save, AlertTriangle, Pencil, X } from "lucide-react";
 
 const GOALS = [
   { value: "lose_fat", label: "🔥 减脂" },
@@ -31,6 +31,16 @@ interface UserData {
 
 export default function ProfileClient({ user }: { user: UserData }) {
   const router = useRouter();
+  const getInitialForm = () => ({
+    name: user.name,
+    gender: user.gender,
+    age: String(user.age),
+    height: String(user.height),
+    weight: String(user.weight),
+    targetWeight: user.targetWeight ? String(user.targetWeight) : "",
+    activityLevel: user.activityLevel,
+    goal: user.goal,
+  });
   const [form, setForm] = useState({
     name: user.name,
     gender: user.gender,
@@ -41,6 +51,7 @@ export default function ProfileClient({ user }: { user: UserData }) {
     activityLevel: user.activityLevel,
     goal: user.goal,
   });
+  const [showEditProfile, setShowEditProfile] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -48,6 +59,13 @@ export default function ProfileClient({ user }: { user: UserData }) {
 
   const update = (key: string, value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  function closeEditProfile() {
+    if (saving) return;
+    setForm(getInitialForm());
+    setSaved(false);
+    setShowEditProfile(false);
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -69,6 +87,7 @@ export default function ProfileClient({ user }: { user: UserData }) {
       });
       if (res.ok) {
         setSaved(true);
+        setShowEditProfile(false);
         router.refresh();
         setTimeout(() => setSaved(false), 2000);
       }
@@ -76,6 +95,9 @@ export default function ProfileClient({ user }: { user: UserData }) {
       setSaving(false);
     }
   }
+
+  const currentGoal = GOALS.find((goal) => goal.value === user.goal)?.label || user.goal;
+  const currentActivity = ACTIVITY_LEVELS.find((level) => level.value === user.activityLevel);
 
   async function handleReset() {
     setResetting(true);
@@ -97,15 +119,91 @@ export default function ProfileClient({ user }: { user: UserData }) {
           <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
             <User size={24} />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <h1 className="text-xl font-bold">{user.name}</h1>
             <p className="text-emerald-100 text-sm">个人资料</p>
           </div>
+          <button
+            onClick={() => {
+              setForm(getInitialForm());
+              setShowEditProfile(true);
+            }}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/20 hover:bg-white/30"
+            aria-label="编辑个人资料"
+          >
+            <Pencil size={18} />
+          </button>
         </div>
       </div>
 
-      {/* Basic Info */}
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          { label: "年龄", value: `${user.age}岁` },
+          { label: "身高", value: `${user.height}cm` },
+          { label: "体重", value: `${user.weight}kg` },
+        ].map((item) => (
+          <div key={item.label} className="rounded-2xl bg-white p-4 text-center shadow-sm dark:bg-slate-800">
+            <div className="text-lg font-bold text-slate-800 dark:text-slate-100">{item.value}</div>
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{item.label}</div>
+          </div>
+        ))}
+      </div>
+
       <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2">
+          <Target size={18} className="text-emerald-600" />
+          <h2 className="font-semibold text-slate-800 dark:text-slate-100">目标与活动</h2>
+        </div>
+        <div className="grid grid-cols-1 gap-3">
+          <div className="rounded-xl bg-slate-50 p-3 dark:bg-slate-700/50">
+            <div className="text-xs text-slate-500 dark:text-slate-400">健身目标</div>
+            <div className="mt-1 font-medium text-slate-800 dark:text-slate-100">{currentGoal}</div>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3 dark:bg-slate-700/50">
+            <div className="text-xs text-slate-500 dark:text-slate-400">活动水平</div>
+            <div className="mt-1 font-medium text-slate-800 dark:text-slate-100">
+              {currentActivity ? `${currentActivity.label} · ${currentActivity.desc}` : user.activityLevel}
+            </div>
+          </div>
+          {user.targetWeight && (
+            <div className="rounded-xl bg-slate-50 p-3 dark:bg-slate-700/50">
+              <div className="text-xs text-slate-500 dark:text-slate-400">目标体重</div>
+              <div className="mt-1 font-medium text-slate-800 dark:text-slate-100">{user.targetWeight}kg</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <button
+        onClick={() => {
+          setForm(getInitialForm());
+          setShowEditProfile(true);
+        }}
+        className="cute-tap w-full bg-emerald-500 text-white py-3.5 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-emerald-600 transition-colors shadow-sm shadow-emerald-200/70 dark:shadow-none"
+      >
+        <Pencil size={18} />
+        编辑个人资料
+      </button>
+
+      {showEditProfile && (
+        <div className="cute-popup-backdrop fixed inset-0 z-50 flex items-end justify-center bg-slate-950/35 px-4 pb-4 pt-16 backdrop-blur-sm sm:items-center sm:pb-0">
+          <div className="cute-popup-panel max-h-[88vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl bg-slate-50 p-4 dark:bg-slate-900">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-slate-900 dark:text-slate-50">编辑个人资料</h2>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">更新基本资料、目标和活动水平</p>
+              </div>
+              <button
+                onClick={closeEditProfile}
+                className="cute-tap rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                aria-label="关闭个人资料编辑"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Basic Info */}
+            <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 mb-1">
           <User size={18} className="text-emerald-600" />
           <h2 className="font-semibold text-slate-800 dark:text-slate-100">基本资料</h2>
@@ -130,7 +228,7 @@ export default function ProfileClient({ user }: { user: UserData }) {
                 className={`flex-1 py-2.5 rounded-xl font-medium transition-all ${
                   form.gender === g
                     ? "bg-emerald-500 text-white"
-                    : "bg-slate-100 text-slate-600"
+                    : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200"
                 }`}
               >
                 {g === "female" ? "女 👩" : "男 👨"}
@@ -163,8 +261,8 @@ export default function ProfileClient({ user }: { user: UserData }) {
         </div>
       </div>
 
-      {/* Goal */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm space-y-3">
+            {/* Goal */}
+            <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm space-y-3">
         <div className="flex items-center gap-2 mb-1">
           <Target size={18} className="text-emerald-600" />
           <h2 className="font-semibold text-slate-800 dark:text-slate-100">健身目标</h2>
@@ -177,7 +275,7 @@ export default function ProfileClient({ user }: { user: UserData }) {
               className={`p-3 rounded-xl border-2 text-sm font-medium transition-all ${
                 form.goal === goal.value
                   ? "border-emerald-400 bg-emerald-50 text-emerald-700"
-                  : "border-slate-200 text-slate-600 hover:border-slate-300"
+                  : "border-slate-200 text-slate-600 hover:border-slate-300 dark:border-slate-700 dark:text-slate-200 dark:hover:border-slate-600"
               }`}
             >
               {goal.label}
@@ -198,8 +296,8 @@ export default function ProfileClient({ user }: { user: UserData }) {
         )}
       </div>
 
-      {/* Activity Level */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm space-y-3">
+            {/* Activity Level */}
+            <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm space-y-3">
         <div className="flex items-center gap-2 mb-1">
           <Activity size={18} className="text-emerald-600" />
           <h2 className="font-semibold text-slate-800 dark:text-slate-100">活动水平</h2>
@@ -212,25 +310,37 @@ export default function ProfileClient({ user }: { user: UserData }) {
               className={`w-full text-left px-4 py-3 rounded-xl border-2 transition-all flex items-center justify-between ${
                 form.activityLevel === level.value
                   ? "border-emerald-400 bg-emerald-50"
-                  : "border-slate-200 hover:border-slate-300"
+                  : "border-slate-200 hover:border-slate-300 dark:border-slate-700 dark:hover:border-slate-600"
               }`}
             >
-              <span className="font-medium text-slate-800">{level.label}</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{level.label}</span>
               <span className="text-sm text-slate-500">{level.desc}</span>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Save Button */}
-      <button
-        onClick={handleSave}
-        disabled={saving}
-        className="w-full bg-emerald-500 text-white py-3.5 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-emerald-600 disabled:opacity-60 transition-colors"
-      >
-        <Save size={18} />
-        {saving ? "保存中..." : saved ? "✓ 已保存！" : "保存修改"}
-      </button>
+            {/* Save Button */}
+            <div className="flex gap-2">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="cute-tap flex-1 bg-emerald-500 text-white py-3.5 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-emerald-600 disabled:opacity-60 transition-colors shadow-sm shadow-emerald-200/70 dark:shadow-none"
+        >
+          <Save size={18} />
+          {saving ? "保存中..." : saved ? "✓ 已保存！" : "保存修改"}
+        </button>
+        <button
+          onClick={closeEditProfile}
+          disabled={saving}
+          className="cute-tap flex-1 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 py-3.5 rounded-xl font-medium disabled:opacity-60"
+        >
+          取消
+        </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Danger Zone */}
       <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-red-100 dark:border-red-900">

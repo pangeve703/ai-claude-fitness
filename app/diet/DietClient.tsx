@@ -44,7 +44,8 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
   const [activeTab, setActiveTab] = useState<"log" | "plan">("log");
   const [showAddForm, setShowAddForm] = useState(false);
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingLog, setEditingLog] = useState<FoodLog | null>(null);
+  const [deletingLog, setDeletingLog] = useState<FoodLog | null>(null);
   const [editForm, setEditForm] = useState({
     meal: "breakfast",
     foodName: "",
@@ -54,6 +55,8 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
     fat: "",
   });
   const [savingEdit, setSavingEdit] = useState(false);
+  const [deletingFood, setDeletingFood] = useState(false);
+  const [addingFood, setAddingFood] = useState(false);
   const [addForm, setAddForm] = useState({
     meal: "breakfast",
     foodName: "",
@@ -68,6 +71,7 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
 
   async function addFood() {
     if (!addForm.foodName || !addForm.calories) return;
+    setAddingFood(true);
     try {
       const res = await fetch("/api/food-log", {
         method: "POST",
@@ -88,16 +92,14 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
     } catch (err) {
       console.error("Add food error:", err);
       alert("添加食物失败，请重试");
+    } finally {
+      setAddingFood(false);
     }
   }
 
-  async function deleteFood(id: number) {
-    await fetch(`/api/food-log?id=${id}`, { method: "DELETE" });
-    router.refresh();
-  }
-
   function startEdit(log: FoodLog) {
-    setEditingId(log.id);
+    setDeletingLog(null);
+    setEditingLog(log);
     setEditForm({
       meal: log.meal,
       foodName: log.foodName,
@@ -109,14 +111,14 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
   }
 
   async function saveEdit() {
-    if (editingId === null || !editForm.foodName || !editForm.calories) return;
+    if (!editingLog || !editForm.foodName || !editForm.calories) return;
     setSavingEdit(true);
     try {
       const res = await fetch("/api/food-log", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: editingId,
+          id: editingLog.id,
           meal: editForm.meal,
           foodName: editForm.foodName,
           calories: parseFloat(editForm.calories),
@@ -126,12 +128,27 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
         }),
       });
       if (!res.ok) throw new Error("Failed to update");
-      setEditingId(null);
+      setEditingLog(null);
       router.refresh();
     } catch {
       alert("更新失败，请重试");
     } finally {
       setSavingEdit(false);
+    }
+  }
+
+  async function confirmDeleteFood() {
+    if (!deletingLog) return;
+    setDeletingFood(true);
+    try {
+      const res = await fetch(`/api/food-log?id=${deletingLog.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete");
+      setDeletingLog(null);
+      router.refresh();
+    } catch {
+      alert("删除失败，请重试");
+    } finally {
+      setDeletingFood(false);
     }
   }
 
@@ -201,14 +218,84 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
       {activeTab === "log" && (
         <div className="space-y-3">
           <button
-            onClick={() => setShowAddForm(!showAddForm)}
+            onClick={() => {
+              setEditingLog(null);
+              setDeletingLog(null);
+              setShowAddForm(true);
+            }}
             className="w-full bg-emerald-500 text-white py-3 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-emerald-600 transition-colors"
           >
             <Plus size={18} /> 手动添加食物
           </button>
 
-          {showAddForm && (
-            <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm space-y-3">
+          {foodLogs.length === 0 ? (
+            <div className="text-center py-10 text-slate-400 dark:text-slate-500">
+              <p className="text-4xl mb-2">🍽</p>
+              <p>还没有饮食记录</p>
+              <p className="text-sm mt-1">手动添加或通过 Telegram 发送照片</p>
+            </div>
+          ) : (
+            Object.entries(MEAL_LABEL).map(([meal, label]) => {
+              const items = byMeal[meal] || [];
+              if (items.length === 0) return null;
+              return (
+                <div key={meal} className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-200">
+                    {label}
+                  </div>
+                  {items.map((log) => (
+                    <div key={log.id} className="flex items-center px-4 py-3 border-b border-slate-50 dark:border-slate-700/40 last:border-0">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-slate-800 dark:text-slate-100 font-medium text-sm">{log.foodName}</div>
+                        <div className="text-xs text-slate-400 dark:text-slate-500">
+                          {Math.round(log.calories)}卡 · P:{Math.round(log.protein)}g · C:{Math.round(log.carbs)}g · F:{Math.round(log.fat)}g
+                          {log.source === "telegram" && " · 📸"}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => startEdit(log)}
+                        className="text-slate-300 dark:text-slate-600 hover:text-blue-400 transition-colors p-1"
+                        aria-label={`编辑 ${log.foodName}`}
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setEditingLog(null);
+                          setDeletingLog(log);
+                        }}
+                        className="text-slate-300 dark:text-slate-600 hover:text-red-400 transition-colors p-1"
+                        aria-label={`删除 ${log.foodName}`}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {showAddForm && (
+        <div className="cute-popup-backdrop fixed inset-0 z-50 flex items-end justify-center bg-slate-950/35 px-4 pb-4 pt-16 backdrop-blur-sm sm:items-center sm:pb-0">
+          <div className="cute-popup-panel w-full max-w-md rounded-2xl bg-white p-4 dark:bg-slate-800">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-slate-900 dark:text-slate-50">手动添加食物</h2>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">记录餐别、热量和三大营养素</p>
+              </div>
+              <button
+                onClick={() => setShowAddForm(false)}
+                className="cute-tap rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                aria-label="关闭添加面板"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
               <select
                 className="w-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-xl px-3 py-2.5 text-slate-700 dark:text-slate-200"
                 value={addForm.meal}
@@ -230,86 +317,115 @@ export default function DietClient({ foodLogs, totals, plan, today }: Props) {
                 <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5" placeholder="碳水(g)" value={addForm.carbs} onChange={(e) => setAddForm((p) => ({ ...p, carbs: e.target.value }))} />
                 <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5" placeholder="脂肪(g)" value={addForm.fat} onChange={(e) => setAddForm((p) => ({ ...p, fat: e.target.value }))} />
               </div>
-              <button onClick={addFood} className="w-full bg-emerald-500 text-white py-2.5 rounded-xl font-medium">
-                添加记录
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={addFood}
+                disabled={addingFood || !addForm.foodName || !addForm.calories}
+                className="cute-tap flex-1 bg-emerald-500 text-white py-2.5 rounded-xl font-medium flex items-center justify-center gap-2 shadow-sm shadow-emerald-200/70 disabled:opacity-60 dark:shadow-none"
+              >
+                <Plus size={16} /> {addingFood ? "添加中..." : "添加"}
+              </button>
+              <button
+                onClick={() => setShowAddForm(false)}
+                disabled={addingFood}
+                className="cute-tap flex-1 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 py-2.5 rounded-xl font-medium disabled:opacity-60"
+              >
+                取消
               </button>
             </div>
-          )}
+          </div>
+        </div>
+      )}
 
-          {foodLogs.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 dark:text-slate-500">
-              <p className="text-4xl mb-2">🍽</p>
-              <p>还没有饮食记录</p>
-              <p className="text-sm mt-1">手动添加或通过 Telegram 发送照片</p>
+      {editingLog && (
+        <div className="cute-popup-backdrop fixed inset-0 z-50 flex items-end justify-center bg-slate-950/35 px-4 pb-4 pt-16 backdrop-blur-sm sm:items-center sm:pb-0">
+          <div className="cute-popup-panel w-full max-w-md rounded-2xl bg-white p-4 dark:bg-slate-800">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-slate-900 dark:text-slate-50">编辑饮食记录</h2>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">调整餐别、份量和营养数据</p>
+              </div>
+              <button
+                onClick={() => setEditingLog(null)}
+                className="cute-tap rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+                aria-label="关闭编辑面板"
+              >
+                <X size={18} />
+              </button>
             </div>
-          ) : (
-            Object.entries(MEAL_LABEL).map(([meal, label]) => {
-              const items = byMeal[meal] || [];
-              if (items.length === 0) return null;
-              return (
-                <div key={meal} className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm overflow-hidden">
-                  <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 font-medium text-slate-700 dark:text-slate-200">
-                    {label}
-                  </div>
-                  {items.map((log) => {
-                    const isEditing = editingId === log.id;
-                    if (isEditing) {
-                      return (
-                        <div key={log.id} className="px-4 py-3 border-b border-slate-50 dark:border-slate-700/40 last:border-0 space-y-2 bg-slate-50 dark:bg-slate-900/40">
-                          <select
-                            className="w-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-lg px-2 py-1.5 text-sm text-slate-700 dark:text-slate-200"
-                            value={editForm.meal}
-                            onChange={(e) => setEditForm((p) => ({ ...p, meal: e.target.value }))}
-                          >
-                            {Object.entries(MEAL_LABEL).map(([val, lbl]) => (
-                              <option key={val} value={val}>{lbl}</option>
-                            ))}
-                          </select>
-                          <input
-                            className="w-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-lg px-2 py-1.5 text-sm"
-                            placeholder="食物名称"
-                            value={editForm.foodName}
-                            onChange={(e) => setEditForm((p) => ({ ...p, foodName: e.target.value }))}
-                          />
-                          <div className="grid grid-cols-4 gap-1.5">
-                            <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-lg px-2 py-1.5 text-sm" placeholder="卡" value={editForm.calories} onChange={(e) => setEditForm((p) => ({ ...p, calories: e.target.value }))} />
-                            <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-lg px-2 py-1.5 text-sm" placeholder="P" value={editForm.protein} onChange={(e) => setEditForm((p) => ({ ...p, protein: e.target.value }))} />
-                            <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-lg px-2 py-1.5 text-sm" placeholder="C" value={editForm.carbs} onChange={(e) => setEditForm((p) => ({ ...p, carbs: e.target.value }))} />
-                            <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-lg px-2 py-1.5 text-sm" placeholder="F" value={editForm.fat} onChange={(e) => setEditForm((p) => ({ ...p, fat: e.target.value }))} />
-                          </div>
-                          <div className="flex gap-2">
-                            <button onClick={saveEdit} disabled={savingEdit} className="flex-1 bg-emerald-500 text-white py-1.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1 disabled:opacity-60">
-                              <Check size={14} /> 保存
-                            </button>
-                            <button onClick={() => setEditingId(null)} className="flex-1 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 py-1.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1">
-                              <X size={14} /> 取消
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    }
-                    return (
-                      <div key={log.id} className="flex items-center px-4 py-3 border-b border-slate-50 dark:border-slate-700/40 last:border-0">
-                        <div className="flex-1 min-w-0">
-                          <div className="text-slate-800 dark:text-slate-100 font-medium text-sm">{log.foodName}</div>
-                          <div className="text-xs text-slate-400 dark:text-slate-500">
-                            {Math.round(log.calories)}卡 · P:{Math.round(log.protein)}g · C:{Math.round(log.carbs)}g · F:{Math.round(log.fat)}g
-                            {log.source === "telegram" && " · 📸"}
-                          </div>
-                        </div>
-                        <button onClick={() => startEdit(log)} className="text-slate-300 dark:text-slate-600 hover:text-blue-400 transition-colors p-1">
-                          <Pencil size={16} />
-                        </button>
-                        <button onClick={() => deleteFood(log.id)} className="text-slate-300 dark:text-slate-600 hover:text-red-400 transition-colors p-1">
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })
-          )}
+
+            <div className="mt-4 space-y-3">
+              <select
+                className="w-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 rounded-xl px-3 py-2.5 text-slate-700 dark:text-slate-200"
+                value={editForm.meal}
+                onChange={(e) => setEditForm((p) => ({ ...p, meal: e.target.value }))}
+              >
+                {Object.entries(MEAL_LABEL).map(([val, label]) => (
+                  <option key={val} value={val}>{label}</option>
+                ))}
+              </select>
+              <input
+                className="w-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5"
+                placeholder="食物名称"
+                value={editForm.foodName}
+                onChange={(e) => setEditForm((p) => ({ ...p, foodName: e.target.value }))}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5" placeholder="卡路里" value={editForm.calories} onChange={(e) => setEditForm((p) => ({ ...p, calories: e.target.value }))} />
+                <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5" placeholder="蛋白质(g)" value={editForm.protein} onChange={(e) => setEditForm((p) => ({ ...p, protein: e.target.value }))} />
+                <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5" placeholder="碳水(g)" value={editForm.carbs} onChange={(e) => setEditForm((p) => ({ ...p, carbs: e.target.value }))} />
+                <input type="number" className="border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5" placeholder="脂肪(g)" value={editForm.fat} onChange={(e) => setEditForm((p) => ({ ...p, fat: e.target.value }))} />
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={saveEdit}
+                disabled={savingEdit || !editForm.foodName || !editForm.calories}
+                className="cute-tap flex-1 bg-emerald-500 text-white py-2.5 rounded-xl font-medium flex items-center justify-center gap-2 shadow-sm shadow-emerald-200/70 disabled:opacity-60 dark:shadow-none"
+              >
+                <Check size={16} /> {savingEdit ? "保存中..." : "保存"}
+              </button>
+              <button
+                onClick={() => setEditingLog(null)}
+                className="cute-tap flex-1 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 py-2.5 rounded-xl font-medium"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deletingLog && (
+        <div className="cute-popup-backdrop fixed inset-0 z-50 flex items-end justify-center bg-slate-950/35 px-4 pb-4 pt-16 backdrop-blur-sm sm:items-center sm:pb-0">
+          <div className="cute-popup-panel w-full max-w-md rounded-2xl bg-white p-4 dark:bg-slate-800">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-50 text-red-500 dark:bg-red-950/50">
+              <Trash2 size={20} />
+            </div>
+            <h2 className="mt-3 font-semibold text-slate-900 dark:text-slate-50">删除这条记录？</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {deletingLog.foodName}，{Math.round(deletingLog.calories)} 卡。删除后今日统计会立即更新。
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={confirmDeleteFood}
+                disabled={deletingFood}
+                className="cute-tap flex-1 bg-red-500 text-white py-2.5 rounded-xl font-medium shadow-sm shadow-red-200/70 disabled:opacity-60 dark:shadow-none"
+              >
+                {deletingFood ? "删除中..." : "确认删除"}
+              </button>
+              <button
+                onClick={() => setDeletingLog(null)}
+                disabled={deletingFood}
+                className="cute-tap flex-1 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 py-2.5 rounded-xl font-medium disabled:opacity-60"
+              >
+                取消
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

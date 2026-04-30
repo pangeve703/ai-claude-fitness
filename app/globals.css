@@ -4,6 +4,7 @@
 :root {
   --background: #f8fafc;
   --foreground: #1e293b;
+  --cute-shadow: 0 24px 70px rgba(16, 185, 129, 0.22);
 }
 
 .dark {
@@ -15,4 +16,74 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+}
+
+@keyframes cute-backdrop-in {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(8px);
+  }
+}
+
+@keyframes cute-panel-in {
+  0% {
+    opacity: 0;
+    transform: translateY(26px) scale(0.96);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.015);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.cute-popup-backdrop {
+  animation: cute-backdrop-in 180ms ease-out both;
+}
+
+.cute-popup-panel {
+  animation: cute-panel-in 320ms cubic-bezier(0.2, 0.9, 0.25, 1.15) both;
+  border: 1px solid rgba(167, 243, 208, 0.75);
+  box-shadow: var(--cute-shadow);
+}
+
+.cute-tap {
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.cute-tap:hover {
+  transform: translateY(-1px);
+}
+
+.cute-tap:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+.dark .cute-popup-panel {
+  border-color: rgba(20, 184, 166, 0.28);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cute-popup-backdrop,
+  .cute-popup-panel {
+    animation: none;
+  }
+
+  .cute-tap,
+  .cute-tap:hover,
+  .cute-tap:active {
+    transform: none;
+  }
 }
