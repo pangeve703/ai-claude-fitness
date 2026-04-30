@@ -20,6 +20,45 @@ function nextMonday(date: Date): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+interface DietPlanContent {
+  dailyCalories?: number;
+  macros?: { protein?: number; carbs?: number; fat?: number };
+}
+
+function getDietPlanContent(content: string | null | undefined): DietPlanContent | null {
+  if (!content) return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function getMacroTargets(targetCalories: number, weight: number, goal: string, plan: DietPlanContent | null) {
+  const planned = plan?.macros;
+  if (
+    planned?.protein &&
+    planned.protein > 0 &&
+    planned?.carbs &&
+    planned.carbs > 0 &&
+    planned?.fat &&
+    planned.fat > 0
+  ) {
+    return {
+      protein: Math.round(planned.protein),
+      carbs: Math.round(planned.carbs),
+      fat: Math.round(planned.fat),
+    };
+  }
+
+  const proteinPerKg = goal === "build_muscle" ? 2 : goal === "lose_fat" ? 1.8 : 1.5;
+  const protein = Math.round(weight * proteinPerKg);
+  const fat = Math.round((targetCalories * 0.25) / 9);
+  const carbs = Math.max(0, Math.round((targetCalories - protein * 4 - fat * 9) / 4));
+  return { protein, carbs, fat };
+}
+
 export default async function DashboardPage() {
   const user = await prisma.user.findFirst();
   if (!user) redirect("/setup");
@@ -74,6 +113,12 @@ export default async function DashboardPage() {
   let targetCalories = Math.round(bmr * (activityMultipliers[user.activityLevel] || 1.55));
   if (user.goal === "lose_fat") targetCalories -= 500;
   else if (user.goal === "build_muscle") targetCalories += 300;
+
+  const dietPlanContent = getDietPlanContent(latestDietPlan?.content);
+  if (dietPlanContent?.dailyCalories && dietPlanContent.dailyCalories > 0) {
+    targetCalories = Math.round(dietPlanContent.dailyCalories);
+  }
+  const macroTargets = getMacroTargets(targetCalories, user.weight, user.goal, dietPlanContent);
 
   const chartDays: string[] = [];
   for (let i = 6; i >= 0; i--) {
@@ -130,6 +175,7 @@ export default async function DashboardPage() {
         todayCalories={todayCalories}
         todayBurned={Math.round(todayBurned)}
         targetCalories={targetCalories}
+        macroTargets={macroTargets}
         completedWorkouts={completedWorkouts}
         totalWorkouts={trainingLogs.length}
         foodLogs={foodLogs}
