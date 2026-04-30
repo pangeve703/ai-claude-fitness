@@ -6,6 +6,7 @@ const anthropic = new Anthropic({
 
 // 使用 Haiku（最省钱，适合测试）
 const FAST_MODEL = "claude-haiku-4-5";
+const IMAGE_MODEL = process.env.ANTHROPIC_IMAGE_MODEL || FAST_MODEL;
 
 export interface UserProfile {
   name: string;
@@ -123,6 +124,19 @@ export type ImageAnalysisResult =
       carbs: number;
       fat: number;
       description: string;
+      confidence?: number;
+      calorieRange?: { min: number; max: number };
+      needsClarification?: boolean;
+      clarificationQuestion?: string;
+      items?: Array<{
+        name: string;
+        estimatedGrams: number;
+        calories: number;
+        protein: number;
+        carbs: number;
+        fat: number;
+        confidence: number;
+      }>;
     }
   | {
       type: "workout";
@@ -177,8 +191,8 @@ export async function analyzeImage(
     : "";
 
   const response = await anthropic.messages.create({
-    model: FAST_MODEL,
-    max_tokens: 600,
+    model: IMAGE_MODEL,
+    max_tokens: 900,
     system: "你是一位营养师兼健身教练，请用中文回复，只输出 JSON 不要其他文字。",
     messages: [{
       role: "user",
@@ -191,7 +205,30 @@ export async function analyzeImage(
           type: "text",
           text: `判断这张图片是食物照片还是运动/健身截图（如跑步、游泳、骑行的App截图），然后按对应格式输出JSON：
 
-如果是食物：{"type":"food","foodName":"食物名称","calories":数字,"protein":数字,"carbs":数字,"fat":数字,"description":"份量描述"}
+如果是食物，请先拆分可见食材/组成部分，再估算总营养。重点规则：
+- 必须按组成部分估算，例如米饭、鸡肉、鸡蛋、酱汁、油、蔬菜分别估算。
+- estimatedGrams 是熟重或可食部重量，无法确定时给保守中间值。
+- 油、酱汁、糖、奶油、炸粉如果可能存在，要作为单独 item 或在 description 说明。
+- confidence 是 0 到 1，表示你对食物识别与份量估算的整体信心。
+- calorieRange 表示合理热量范围；份量不清楚时范围要变宽。
+- 如果 confidence < 0.62，或份量/容器大小/隐藏酱汁很不确定，needsClarification 必须为 true，并给出一个最有帮助的问题。
+
+如果是食物：{
+  "type":"food",
+  "foodName":"总名称",
+  "calories":总热量数字,
+  "protein":总蛋白质数字,
+  "carbs":总碳水数字,
+  "fat":总脂肪数字,
+  "description":"份量与估算依据，说明哪些地方不确定",
+  "confidence":0到1数字,
+  "calorieRange":{"min":数字,"max":数字},
+  "needsClarification":布尔值,
+  "clarificationQuestion":"如果需要确认，问用户一个具体问题；否则空字符串",
+  "items":[
+    {"name":"食材名称","estimatedGrams":数字,"calories":数字,"protein":数字,"carbs":数字,"fat":数字,"confidence":0到1数字}
+  ]
+}
 
 如果是运动截图：{"type":"workout","activity":"活动名称","duration":分钟数字,"distance":"距离如5.2km","pace":"配速如5:30/km","heartRate":"平均心率如148bpm","caloriesBurned":数字,"details":"详细数据摘要","suggestions":"根据数据给出1-2句专业建议"}
 

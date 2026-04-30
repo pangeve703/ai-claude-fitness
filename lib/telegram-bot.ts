@@ -1,5 +1,5 @@
 import TelegramBot from "node-telegram-bot-api";
-import { analyzeImage, analyzeTextEntry } from "./claude";
+import { analyzeImage, analyzeTextEntry, type ImageAnalysisResult } from "./claude";
 import { prisma } from "./prisma";
 
 let bot: TelegramBot | null = null;
@@ -73,12 +73,45 @@ const MEAL_NAME: Record<string, string> = {
   snack: "小食",
 };
 
+type FoodImageResult = Extract<ImageAnalysisResult, { type: "food" }>;
+
+const AUTO_LOG_FOOD_CONFIDENCE = 0.62;
+
 function getDeleteFoodKeyboard(logId: number) {
   return {
     inline_keyboard: [
       [{ text: "↩️ 删除这条食物记录", callback_data: `df:${logId}` }],
     ],
   };
+}
+
+function getFoodConfidence(result: FoodImageResult): number {
+  return typeof result.confidence === "number" && Number.isFinite(result.confidence)
+    ? Math.min(Math.max(result.confidence, 0), 1)
+    : 1;
+}
+
+function formatCalorieRange(result: FoodImageResult): string {
+  const min = result.calorieRange?.min;
+  const max = result.calorieRange?.max;
+  if (typeof min !== "number" || typeof max !== "number") return "";
+  return `\n📏 合理范围：${Math.round(min)}–${Math.round(max)} 卡`;
+}
+
+function formatFoodItems(result: FoodImageResult): string {
+  const items = result.items?.filter((item) => item.name && item.calories > 0) || [];
+  if (items.length === 0) return "";
+
+  const rows = items.slice(0, 6).map((item) => {
+    const grams = item.estimatedGrams > 0 ? ` ${Math.round(item.estimatedGrams)}g` : "";
+    return `• ${item.name}${grams} — ${Math.round(item.calories)}卡`;
+  });
+
+  return `\n\n🔎 *拆分估算*\n${rows.join("\n")}`;
+}
+
+function shouldAskForFoodClarification(result: FoodImageResult): boolean {
+  return result.needsClarification === true || getFoodConfidence(result) < AUTO_LOG_FOOD_CONFIDENCE;
 }
 
 async function getCaloriesSummary(today: string): Promise<string> {
@@ -142,8 +175,8 @@ function setupHandlers(bot: TelegramBot) {
         chatId,
         `👋 你好！我是你的 AI 健身教练助理！
 
-📸 发送食物照片，我会自动识别并记录卡路里。
-✏️ 也可以直接输入你吃了什么，例如：「早餐吃了一碗燕麦粥和两颗鸡蛋」
+📸 发送食物照片，我会拆分食材、估算份量和卡路里。照片不清楚时会先问你确认，不会直接乱记。
+✏️ 照片加说明会更准，例如：「午餐，饭半碗，鸡胸约120g，少酱」。也可以直接输入你吃了什么。
 🏃 或输入你完成的运动，例如：「跑步 30 分钟 5 公里」
 
 📋 指令列表：
@@ -165,9 +198,15 @@ function setupHandlers(bot: TelegramBot) {
 📸 *拍照记录食物*
 直接发送食物图片，AI 会自动：
 • 识别食物种类
+• 拆分食材组成
+• 估算每个组成部分的份量
 • 估算卡路里
 • 计算蛋白质/碳水/脂肪
-• 自动记录到今日日志
+• 低信心时先问你确认，避免误记录
+
+照片加说明会更准：
+• 「午餐，饭半碗，鸡胸约120g，少酱」
+• 「早餐，两个蛋，一片吐司，无糖咖啡」
 
 ✏️ *文字记录食物*
 描述你吃了什么，例如：
@@ -362,7 +401,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
   bot.on("photo", track(async (msg) => {
     const chatId = msg.chat.id;
 
-    const processingMsg = await bot.sendMessage(chatId, "🔍 正在分析食物图片，请稍候...");
+    const processingMsg = await bot.sendMessage(chatId, "🔍 正在拆分食材和估算份量，请稍候...");
 
     try {
       const photos = msg.photo!;
@@ -411,6 +450,26 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
         );
       } else if (result.type === "food") {
         const meal = detectMealFromText(caption || "") || getMealByHour();
+        const confidence = getFoodConfidence(result);
+        const confidenceText = `${Math.round(confidence * 100)}%`;
+        const calorieRangeText = formatCalorieRange(result);
+        const itemBreakdown = formatFoodItems(result);
+
+        if (shouldAskForFoodClarification(result)) {
+          const question =
+            result.clarificationQuestion?.trim() ||
+            "请补充大概份量，例如米饭几碗、肉类多少克、是否有酱汁或油炸。";
+
+          await bot.editMessageText(
+            `⚠️ *先不自动记录*\n\n我识别到：*${result.foodName}*\n${result.description}\n\n🔥 暂估：${Math.round(result.calories)} 卡${calorieRangeText}\n🎯 信心：${confidenceText}${itemBreakdown}\n\n${question}\n\n你可以直接回复份量说明，例如：「饭半碗，鸡肉约120g，少酱」。`,
+            {
+              chat_id: chatId,
+              message_id: processingMsg.message_id,
+              parse_mode: "Markdown",
+            }
+          );
+          return;
+        }
 
         const log = await prisma.foodLog.create({
           data: {
@@ -428,7 +487,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
 
         const calSummary = await getCaloriesSummary(today);
         await bot.editMessageText(
-          `✅ *已记录 ${MEAL_NAME[meal]}！*\n\n🍽 *${result.foodName}*\n${result.description}\n\n🔥 卡路里：*${result.calories}* 卡\n🥩 蛋白质：${result.protein}g\n🍞 碳水：${result.carbs}g\n🧈 脂肪：${result.fat}g\n\n${calSummary}`,
+          `✅ *已记录 ${MEAL_NAME[meal]}！*\n\n🍽 *${result.foodName}*\n${result.description}\n\n🔥 卡路里：*${result.calories}* 卡${calorieRangeText}\n🥩 蛋白质：${result.protein}g\n🍞 碳水：${result.carbs}g\n🧈 脂肪：${result.fat}g\n🎯 估算信心：${confidenceText}${itemBreakdown}\n\n${calSummary}`,
           {
             chat_id: chatId,
             message_id: processingMsg.message_id,
