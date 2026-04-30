@@ -3,6 +3,7 @@ import { analyzeImage, analyzeTextEntry, type ImageAnalysisResult } from "./clau
 import { prisma } from "./prisma";
 
 let bot: TelegramBot | null = null;
+const APP_TIME_ZONE = process.env.APP_TIME_ZONE || "Asia/Singapore";
 
 // node-telegram-bot-api dispatches events synchronously and does not await async
 // listeners. On a serverless platform the function suspends as soon as the
@@ -46,15 +47,36 @@ export function getBot(): TelegramBot {
   return bot;
 }
 
-function getTodayString(): string {
-  return new Date().toISOString().split("T")[0];
+function getDatePart(parts: Intl.DateTimeFormatPart[], type: string): string {
+  return parts.find((part) => part.type === type)?.value || "";
 }
 
-function getMealByHour(): string {
-  const hour = new Date().getHours();
+function getTodayString(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  return `${getDatePart(parts, "year")}-${getDatePart(parts, "month")}-${getDatePart(parts, "day")}`;
+}
+
+function getHourInAppTimeZone(date = new Date()): number {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: APP_TIME_ZONE,
+    hour: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  }).formatToParts(date);
+  return Number(getDatePart(parts, "hour"));
+}
+
+function getMealByHour(date = new Date()): string {
+  const hour = getHourInAppTimeZone(date);
   if (hour >= 6 && hour < 10) return "breakfast";
-  if (hour >= 10 && hour < 14) return "lunch";
-  if (hour >= 14 && hour < 17) return "snack";
+  if (hour >= 10 && hour < 15) return "lunch";
+  if (hour >= 15 && hour < 17) return "snack";
   return "dinner";
 }
 
