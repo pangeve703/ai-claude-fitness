@@ -101,8 +101,6 @@ const MEAL_NAME: Record<string, string> = {
 
 type FoodImageResult = Extract<ImageAnalysisResult, { type: "food" }>;
 
-const AUTO_LOG_FOOD_CONFIDENCE = 0.62;
-
 function getDeleteFoodKeyboard(logId: number) {
   return {
     inline_keyboard: [
@@ -134,10 +132,6 @@ function formatFoodItems(result: FoodImageResult): string {
   });
 
   return `\n\n🔎 *拆分估算*\n${rows.join("\n")}`;
-}
-
-function shouldAskForFoodClarification(result: FoodImageResult): boolean {
-  return result.needsClarification === true || getFoodConfidence(result) < AUTO_LOG_FOOD_CONFIDENCE;
 }
 
 async function getCaloriesSummary(today: string): Promise<string> {
@@ -323,7 +317,7 @@ function setupHandlers(bot: TelegramBot) {
         chatId,
         `👋 你好！我是你的 AI 健身教练助理！
 
-📸 发送食物照片，我会拆分食材、估算份量和卡路里。照片不清楚时会先问你确认，不会直接乱记。
+📸 发送食物照片，我会拆分食材、估算份量和卡路里，并直接记录；不准可以点删除。
 ✏️ 照片加说明会更准，例如：「午餐，饭半碗，鸡胸约120g，少酱」。也可以直接输入你吃了什么。
 🏃 或输入你完成的运动，例如：「跑步 30 分钟 5 公里」
 💬 也可以直接聊天问我饮食、训练、减脂、增肌建议；如果怕被当成记录，用 /chat 开头。
@@ -352,7 +346,7 @@ function setupHandlers(bot: TelegramBot) {
 • 估算每个组成部分的份量
 • 估算卡路里
 • 计算蛋白质/碳水/脂肪
-• 低信心时先问你确认，避免误记录
+• 识别后直接记录；结果不准可以点删除撤回
 
 照片加说明会更准：
 • 「午餐，饭半碗，鸡胸约120g，少酱」
@@ -634,22 +628,6 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
         const confidenceText = `${Math.round(confidence * 100)}%`;
         const calorieRangeText = formatCalorieRange(result);
         const itemBreakdown = formatFoodItems(result);
-
-        if (shouldAskForFoodClarification(result)) {
-          const question =
-            result.clarificationQuestion?.trim() ||
-            "请补充大概份量，例如米饭几碗、肉类多少克、是否有酱汁或油炸。";
-
-          await bot.editMessageText(
-            `⚠️ *先不自动记录*\n\n我识别到：*${result.foodName}*\n${result.description}\n\n🔥 暂估：${Math.round(result.calories)} 卡${calorieRangeText}\n🎯 信心：${confidenceText}${itemBreakdown}\n\n${question}\n\n你可以直接回复份量说明，例如：「饭半碗，鸡肉约120g，少酱」。`,
-            {
-              chat_id: chatId,
-              message_id: processingMsg.message_id,
-              parse_mode: "Markdown",
-            }
-          );
-          return;
-        }
 
         const log = await prisma.foodLog.create({
           data: {
