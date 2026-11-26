@@ -53,8 +53,6 @@ You can also generate a personalised weekly diet and training plan, and chat wit
 6. **Switch language** (the 中 / EN button at the top of Home, or **Me → Appearance**) and generate again: the UI and Claude's output both change.
 7. **Optional, Telegram:** under **Me → Telegram bot**, paste a token from [@BotFather](https://t.me/BotFather). The app checks it, registers the webhook, and the bot is live; send it a food photo.
 
-A full interview walkthrough script is in [docs/DEMO.md](docs/DEMO.md).
-
 ---
 
 ## Features
