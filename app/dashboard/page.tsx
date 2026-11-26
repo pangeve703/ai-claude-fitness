@@ -1,31 +1,22 @@
 import { prisma } from "@/lib/prisma";
-import { redirect } from "next/navigation";
+import { requireUser } from "@/lib/session";
 import NavBar from "@/components/NavBar";
 import DashboardClient from "./DashboardClient";
+import { getBotStatus } from "@/lib/bot-config";
+import { addDays, dateKey, isDateKey, shortLabel, weekStart } from "@/lib/dates";
+import { bmi as calcBmi, macroTargets as calcMacroTargets, mealBudgets, targetCalories as calcTargetCalories } from "@/lib/nutrition";
+import { latestWeighIn } from "@/lib/weight-store";
+import { caloriesBurned } from "@/lib/workouts";
+import { loggingStreak } from "@/lib/streak";
 
 export const dynamic = "force-dynamic";
-
-function getWeekStart(date: Date): Date {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function nextMonday(date: Date): string {
-  const d = getWeekStart(date);
-  d.setDate(d.getDate() + 7);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
-}
 
 interface DietPlanContent {
   dailyCalories?: number;
   macros?: { protein?: number; carbs?: number; fat?: number };
 }
 
-function getDietPlanContent(content: string | null | undefined): DietPlanContent | null {
+function parsePlan(content: string | null | undefined): DietPlanContent | null {
   if (!content) return null;
   try {
     const parsed = JSON.parse(content);
@@ -35,160 +26,98 @@ function getDietPlanContent(content: string | null | undefined): DietPlanContent
   }
 }
 
-function getMacroTargets(targetCalories: number, weight: number, goal: string, plan: DietPlanContent | null) {
-  const planned = plan?.macros;
-  if (
-    planned?.protein &&
-    planned.protein > 0 &&
-    planned?.carbs &&
-    planned.carbs > 0 &&
-    planned?.fat &&
-    planned.fat > 0
-  ) {
-    return {
-      protein: Math.round(planned.protein),
-      carbs: Math.round(planned.carbs),
-      fat: Math.round(planned.fat),
-    };
-  }
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ date?: string }> }) {
+  const user = await requireUser();
+  const userId = user.id;
 
-  const proteinPerKg = goal === "build_muscle" ? 2 : goal === "lose_fat" ? 1.8 : 1.5;
-  const protein = Math.round(weight * proteinPerKg);
-  const fat = Math.round((targetCalories * 0.25) / 9);
-  const carbs = Math.max(0, Math.round((targetCalories - protein * 4 - fat * 9) / 4));
-  return { protein, carbs, fat };
-}
+  // All dates are calendar days in APP_TIME_ZONE (lib/dates.ts). `?date=` browses past days.
+  const today = dateKey();
+  const requested = (await searchParams).date;
+  const selected = isDateKey(requested) && requested <= today ? requested : today;
+  const monday = weekStart(selected);
+  const rangeStart = [addDays(selected, -6), monday].sort()[0];
+  const rangeEnd = addDays(monday, 6);
 
-export default async function DashboardPage() {
-  const user = await prisma.user.findFirst();
-  if (!user) redirect("/setup");
+  const [foodLogs, trainingLogs, rangeFood, rangeWorkouts, latestDietPlan, latestTrainingPlan, loggedDays] = await Promise.all([
+    prisma.foodLog.findMany({
+      where: { userId, date: selected },
+      select: { id: true, foodName: true, meal: true, calories: true, protein: true, carbs: true, fat: true, source: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.trainingLog.findMany({ where: { userId, date: selected } }),
+    prisma.foodLog.findMany({ where: { userId, date: { gte: rangeStart, lte: rangeEnd } }, select: { date: true, calories: true } }),
+    prisma.trainingLog.findMany({
+      where: { userId, date: { gte: rangeStart, lte: rangeEnd } },
+      select: { date: true, notes: true, completed: true },
+    }),
+    prisma.plan.findFirst({ where: { userId, type: "diet" }, orderBy: { createdAt: "desc" } }),
+    prisma.plan.findFirst({ where: { userId, type: "training" }, orderBy: { createdAt: "desc" } }),
+    prisma.foodLog.findMany({
+      where: { userId, date: { gte: addDays(today, -120) } },
+      select: { date: true },
+      distinct: ["date"],
+    }),
+  ]);
 
-  const now = new Date();
-  const today = now.toISOString().split("T")[0];
-  const weekStart = getWeekStart(now);
+  // One plan of each type per week (Monday–Sunday).
+  const thisWeek = weekStart(today);
+  const nextWeekLabel = shortLabel(addDays(thisWeek, 7));
+  const lockedUntil = (plan: { createdAt: Date } | null) => (plan && dateKey(plan.createdAt) >= thisWeek ? nextWeekLabel : null);
 
-  const foodLogs = await prisma.foodLog.findMany({
-    where: { date: today },
-    select: { foodName: true, meal: true, calories: true, protein: true, carbs: true, fat: true },
-    orderBy: { createdAt: "asc" },
-  });
-  const trainingLogs = await prisma.trainingLog.findMany({ where: { date: today } });
+  // A diet plan's daily calories win (computed by lib/nutrition.ts when the plan was made).
+  const plan = parsePlan(latestDietPlan?.content);
+  const targetCalories = plan?.dailyCalories && plan.dailyCalories > 0 ? Math.round(plan.dailyCalories) : calcTargetCalories(user);
+  const macroTargets = calcMacroTargets(targetCalories, user.weight, user.goal, plan?.macros);
 
-  const latestDietPlan = await prisma.plan.findFirst({
-    where: { type: "diet" },
-    orderBy: { createdAt: "desc" },
-  });
-  const latestTrainingPlan = await prisma.plan.findFirst({
-    where: { type: "training" },
-    orderBy: { createdAt: "desc" },
-  });
+  const eatenOn = (date: string) => Math.round(rangeFood.filter((l) => l.date === date).reduce((s, l) => s + l.calories, 0));
+  const weekProgress = Object.fromEntries(
+    Array.from({ length: 7 }, (_, i) => addDays(monday, i)).map((d) => [d, eatenOn(d) / targetCalories])
+  );
+  const chartData = Array.from({ length: 7 }, (_, i) => addDays(selected, i - 6)).map((date) => ({
+    date: shortLabel(date),
+    consumed: eatenOn(date),
+    burned: caloriesBurned(rangeWorkouts.filter((w) => w.date === date)),
+  }));
 
-  const dietLockedUntil = latestDietPlan && new Date(latestDietPlan.createdAt) >= weekStart ? nextMonday(now) : null;
-  const trainingLockedUntil =
-    latestTrainingPlan && new Date(latestTrainingPlan.createdAt) >= weekStart ? nextMonday(now) : null;
-
-  const todayCalories = foodLogs.reduce((sum: number, log) => sum + log.calories, 0);
-  const completedWorkouts = trainingLogs.filter((l) => l.completed).length;
-  let todayBurned = 0;
-  for (const w of trainingLogs) {
-    try {
-      const n = JSON.parse(w.notes || "{}");
-      todayBurned += n.caloriesBurned || 0;
-    } catch {}
-  }
-
-  const bmi = user.weight / (user.height / 100) ** 2;
-
-  const bmr =
-    user.gender === "male"
-      ? 10 * user.weight + 6.25 * user.height - 5 * user.age + 5
-      : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161;
-  const activityMultipliers: Record<string, number> = {
-    sedentary: 1.2,
-    light: 1.375,
-    moderate: 1.55,
-    active: 1.725,
-    very_active: 1.9,
-  };
-  let targetCalories = Math.round(bmr * (activityMultipliers[user.activityLevel] || 1.55));
-  if (user.goal === "lose_fat") targetCalories -= 500;
-  else if (user.goal === "build_muscle") targetCalories += 300;
-
-  const dietPlanContent = getDietPlanContent(latestDietPlan?.content);
-  if (dietPlanContent?.dailyCalories && dietPlanContent.dailyCalories > 0) {
-    targetCalories = Math.round(dietPlanContent.dailyCalories);
-  }
-  const macroTargets = getMacroTargets(targetCalories, user.weight, user.goal, dietPlanContent);
-
-  const chartDays: string[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    chartDays.push(d.toISOString().split("T")[0]);
-  }
-  const weekLogs = await prisma.foodLog.findMany({
-    where: { date: { gte: chartDays[0] } },
-    select: { date: true, calories: true },
-  });
-  const weekWorkouts = await prisma.trainingLog.findMany({
-    where: { date: { gte: chartDays[0] } },
-    select: { date: true, notes: true },
+  const weightLogs = await prisma.weightLog.findMany({
+    where: { userId, date: { gte: addDays(today, -30) } },
+    orderBy: { date: "asc" },
+    select: { date: true, weight: true },
   });
 
-  const weightSince = new Date(now);
-  weightSince.setDate(weightSince.getDate() - 30);
-  const weightSinceStr = weightSince.toISOString().split("T")[0];
-  let weightChartData: { date: string; weight: number }[] = [];
-  try {
-    const weightLogs = await prisma.weightLog.findMany({
-      where: { date: { gte: weightSinceStr } },
-      orderBy: { date: "asc" },
-      select: { date: true, weight: true },
-    });
-    weightChartData = weightLogs.map((l) => ({
-      date: `${parseInt(l.date.split("-")[1])}/${parseInt(l.date.split("-")[2])}`,
-      weight: l.weight,
-    }));
-  } catch {
-    // WeightLog table not yet created — falls back to empty chart
-  }
+  const eaten = foodLogs.reduce(
+    (acc, l) => ({ calories: acc.calories + l.calories, protein: acc.protein + l.protein, carbs: acc.carbs + l.carbs, fat: acc.fat + l.fat }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  );
 
-  const chartData = chartDays.map((date) => {
-    const dayLogs = weekLogs.filter((l) => l.date === date);
-    const consumed = Math.round(dayLogs.reduce((sum: number, l) => sum + l.calories, 0));
-    const dayWorkouts = weekWorkouts.filter((w) => w.date === date);
-    let burned = 0;
-    for (const w of dayWorkouts) {
-      try {
-        const n = JSON.parse(w.notes || "{}");
-        burned += n.caloriesBurned || 0;
-      } catch {}
-    }
-    const label = `${parseInt(date.split("-")[1])}/${parseInt(date.split("-")[2])}`;
-    return { date: label, consumed, burned: Math.round(burned), target: targetCalories };
-  });
+  const [botStatus, lastWeighIn] = await Promise.all([getBotStatus(userId), latestWeighIn(userId)]);
 
   return (
-    <div className="pb-20 min-h-screen bg-slate-50 dark:bg-slate-900">
+    <div className="min-h-screen pb-28">
       <DashboardClient
-        user={user}
-        todayCalories={todayCalories}
-        todayBurned={Math.round(todayBurned)}
+        user={{ name: user.name, weight: user.weight, goal: user.goal, targetWeight: user.targetWeight ?? null }}
+        today={today}
+        selected={selected}
+        bmi={calcBmi(user.weight, user.height)}
+        streak={loggingStreak(loggedDays.map((d) => d.date), today)}
+        eaten={eaten}
+        burned={caloriesBurned(trainingLogs)}
+        workouts={{ done: trainingLogs.filter((l) => l.completed).length, total: trainingLogs.length }}
+        foodLogs={foodLogs}
         targetCalories={targetCalories}
         macroTargets={macroTargets}
-        completedWorkouts={completedWorkouts}
-        totalWorkouts={trainingLogs.length}
-        foodLogs={foodLogs}
-        bmi={bmi}
-        hasDietPlan={!!latestDietPlan}
-        hasTrainingPlan={!!latestTrainingPlan}
-        dietLockedUntil={dietLockedUntil}
-        trainingLockedUntil={trainingLockedUntil}
+        mealBudgets={mealBudgets(targetCalories)}
+        weekProgress={weekProgress}
         chartData={chartData}
-        weightChartData={weightChartData}
-        targetWeight={user.targetWeight ?? null}
+        weightChartData={weightLogs.map((l) => ({ date: shortLabel(l.date), weight: l.weight }))}
+        lastWeighIn={lastWeighIn}
+        plans={{
+          diet: { exists: !!latestDietPlan, lockedUntil: lockedUntil(latestDietPlan) },
+          training: { exists: !!latestTrainingPlan, lockedUntil: lockedUntil(latestTrainingPlan) },
+        }}
+        telegramBot={{ connected: botStatus.connected, username: botStatus.username }}
       />
-      <NavBar />
+      <NavBar today={today} />
     </div>
   );
 }

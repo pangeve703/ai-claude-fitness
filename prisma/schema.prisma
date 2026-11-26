@@ -7,9 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// One row per person. Visitors get a guest account when they finish setup;
+/// guests inactive for GUEST_TTL_DAYS are deleted with all their data (lib/session.ts).
+/// isGuest defaults to false so pre-existing rows (the owner) are never treated as guests.
 model User {
-  id            Int       @id @default(1)
-  name          String    @default("用户")
+  id            Int      @id @default(autoincrement())
+  name          String   @default("用户")
   height        Float
   weight        Float
   age           Int
@@ -17,19 +20,38 @@ model User {
   activityLevel String
   goal          String
   targetWeight  Float?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  isGuest       Boolean  @default(false)
+  lastSeenAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  foodLogs      FoodLog[]
-  trainingLogs  TrainingLog[]
-  plans         Plan[]
-  weightLogs    WeightLog[]
+  sessions     Session[]
+  foodLogs     FoodLog[]
+  trainingLogs TrainingLog[]
+  plans        Plan[]
+  weightLogs   WeightLog[]
+  botConfig    BotConfig?
+
+  @@index([isGuest, lastSeenAt])
+}
+
+/// Browser sessions. The cookie holds a random token; only its SHA-256 hash is stored.
+model Session {
+  id        Int       @id @default(autoincrement())
+  tokenHash String    @unique
+  userId    Int
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Set when a one-time sign-in link has been used (scripts/owner-link.mjs).
+  claimedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 model WeightLog {
   id        Int      @id @default(autoincrement())
-  userId    Int      @default(1)
-  user      User     @relation(fields: [userId], references: [id])
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   date      String
   weight    Float
   createdAt DateTime @default(now())
@@ -38,39 +60,63 @@ model WeightLog {
 }
 
 model FoodLog {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @default(1)
-  user        User     @relation(fields: [userId], references: [id])
-  date        String
-  meal        String
-  foodName    String
-  calories    Float
-  protein     Float    @default(0)
-  carbs       Float    @default(0)
-  fat         Float    @default(0)
-  imageUrl    String?
-  source      String   @default("manual")
-  createdAt   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      String
+  meal      String
+  foodName  String
+  calories  Float
+  protein   Float    @default(0)
+  carbs     Float    @default(0)
+  fat       Float    @default(0)
+  imageUrl  String?
+  source    String   @default("manual")
+  createdAt DateTime @default(now())
+
+  @@index([userId, date])
 }
 
 model TrainingLog {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @default(1)
-  user        User     @relation(fields: [userId], references: [id])
-  date        String
-  exercise    String
-  duration    Int
-  completed   Boolean  @default(false)
-  notes       String?
-  createdAt   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      String
+  exercise  String
+  duration  Int
+  completed Boolean  @default(false)
+  notes     String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, date])
 }
 
 model Plan {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @default(1)
-  user        User     @relation(fields: [userId], references: [id])
-  type        String
-  content     String
-  week        Int      @default(1)
-  createdAt   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  content   String
+  week      Int      @default(1)
+  createdAt DateTime @default(now())
+
+  @@index([userId, type, createdAt])
+}
+
+/// A Telegram bot connected from the app (one per user).
+/// `id` is random and forms the webhook URL (/api/telegram/webhook/<id>), so URLs can't be guessed.
+/// Every secret is AES-256-GCM encrypted with APP_SECRET (lib/crypto.ts).
+model BotConfig {
+  id               String   @id
+  userId           Int      @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  telegramTokenEnc String
+  webhookSecretEnc String
+  /// Visitor's Anthropic key for the bot; null means use the server's ANTHROPIC_API_KEY.
+  anthropicKeyEnc  String?
+  botUsername      String?
+  /// The only Telegram chat this bot serves: the first private chat to message it after connecting.
+  /// A string because Telegram chat ids can exceed 32 bits.
+  chatId           String?
+  updatedAt        DateTime @updatedAt
 }

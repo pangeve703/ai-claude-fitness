@@ -1,497 +1,435 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  Dumbbell, Scale, Bot, ChevronRight, AlertCircle,
-  Eye, EyeOff, Pencil, Check, X, Lock, ChevronDown, ChevronUp,
-  Utensils, Activity, Target,
-} from "lucide-react";
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine,
-  ResponsiveContainer, Legend, LineChart, Line,
-} from "recharts";
+import { AlertCircle, Bot, ChevronRight, Flame, Loader2, Lock, Pencil, Scale, Utensils } from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, LineChart, Line } from "recharts";
+import { useI18n } from "@/components/I18nProvider";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
+import ApiKeyBanner from "@/components/ApiKeyBanner";
+import Sheet from "@/components/Sheet";
+import WeekStrip from "@/components/ui/WeekStrip";
+import CalorieRing from "@/components/ui/CalorieRing";
+import MacroBars from "@/components/ui/MacroBars";
+import MealCard, { type MealItem } from "@/components/ui/MealCard";
+import ActionCard from "@/components/ui/ActionCard";
+import { aiHeaders } from "@/lib/byok-client";
+import { shortLabel } from "@/lib/dates";
+import { bmiCategory, MEAL_ORDER, type MealKey } from "@/lib/nutrition";
+import { parseWeight, weightChange } from "@/lib/weight";
 
-const GOAL_LABEL: Record<string, string> = {
-  lose_fat: "🔥 减脂",
-  run_speed: "🏃 提升跑速",
-  heart_rate: "❤️ 改善心率",
-  build_muscle: "💪 增肌",
-};
-
-const MEAL_LABEL: Record<string, string> = {
-  breakfast: "☀️ 早餐",
-  lunch: "🌤 午餐",
-  dinner: "🌙 晚餐",
-  snack: "🍎 小食",
-};
-
-const MEAL_ORDER = ["breakfast", "lunch", "snack", "dinner"];
-
-interface ChartDay { date: string; consumed: number; burned: number; target: number; }
-interface WeightPoint { date: string; weight: number; }
-interface FoodLog { calories: number; foodName: string; meal: string; protein: number; carbs: number; fat: number; }
-interface MacroTargets { protein: number; carbs: number; fat: number; }
+type Macros = { protein: number; carbs: number; fat: number };
+type PlanState = { exists: boolean; lockedUntil: string | null };
 
 interface Props {
-  user: { name: string; weight: number; height: number; goal: string; targetWeight?: number | null; };
-  todayCalories: number;
-  todayBurned: number;
-  targetCalories: number;
-  macroTargets: MacroTargets;
-  completedWorkouts: number;
-  totalWorkouts: number;
-  foodLogs: FoodLog[];
+  user: { name: string; weight: number; goal: string; targetWeight: number | null };
+  today: string;
+  selected: string;
   bmi: number;
-  hasDietPlan: boolean;
-  hasTrainingPlan: boolean;
-  dietLockedUntil: string | null;
-  trainingLockedUntil: string | null;
-  chartData: ChartDay[];
-  weightChartData: WeightPoint[];
-  targetWeight: number | null;
+  streak: number;
+  eaten: Macros & { calories: number };
+  burned: number;
+  workouts: { done: number; total: number };
+  foodLogs: (MealItem & { meal: string })[];
+  targetCalories: number;
+  macroTargets: Macros;
+  mealBudgets: Record<MealKey, number>;
+  weekProgress: Record<string, number>;
+  chartData: { date: string; consumed: number; burned: number }[];
+  weightChartData: { date: string; weight: number }[];
+  lastWeighIn: { date: string; weight: number } | null;
+  plans: { diet: PlanState; training: PlanState };
+  telegramBot: { connected: boolean; username: string | null };
 }
 
-export default function DashboardClient({
-  user, todayCalories, todayBurned, targetCalories, completedWorkouts, totalWorkouts,
-  macroTargets, foodLogs, bmi, hasDietPlan, hasTrainingPlan, dietLockedUntil, trainingLockedUntil, chartData,
-  weightChartData, targetWeight,
-}: Props) {
+const tooltipStyle = { borderRadius: 14, border: "none", boxShadow: "0 8px 24px rgba(30,60,90,0.15)", fontSize: 12 };
+
+export default function DashboardClient(props: Props) {
+  const { user, today, selected, eaten, targetCalories, plans } = props;
   const router = useRouter();
+  const { t } = useI18n();
+  const d = t.dashboard;
+  const fmt = (n: number) => Math.round(n).toLocaleString(t.intl);
 
-  const [generatingDiet, setGeneratingDiet] = useState(false);
-  const [generatingTraining, setGeneratingTraining] = useState(false);
+  const [generating, setGenerating] = useState<"diet" | "training" | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
-  const [showWeight, setShowWeight] = useState(false);
-  const [editingWeight, setEditingWeight] = useState(false);
-  const [newWeight, setNewWeight] = useState(String(user.weight));
-  const [displayWeight, setDisplayWeight] = useState(user.weight);
-  const [savingWeight, setSavingWeight] = useState(false);
-  const [showLog, setShowLog] = useState(false);
 
-  async function handleSaveWeight() {
-    const val = parseFloat(newWeight);
-    if (!val || val < 20 || val > 300) return;
-    setSavingWeight(true);
+  // Weigh-in sheet
+  const [weightOpen, setWeightOpen] = useState(false);
+  const [newWeight, setNewWeight] = useState(String(props.lastWeighIn?.weight ?? user.weight));
+  const [savingWeight, setSavingWeight] = useState(false);
+  const [weightError, setWeightError] = useState<string | null>(null);
+  const [weighIn, setWeighIn] = useState(props.lastWeighIn);
+  const [weightDelta, setWeightDelta] = useState<{ diff: number; since: string } | null>(null);
+
+  const isToday = selected === today;
+  const remaining = targetCalories - (eaten.calories - props.burned);
+  const over = remaining < 0;
+  const goalLabel = (t.goals as Record<string, { label: string }>)[user.goal]?.label ?? user.goal;
+  const bmiLabel = d.bmi[bmiCategory(props.bmi, t.bmiStandard)];
+  const selectedLabel = new Date(`${selected}T12:00:00Z`).toLocaleDateString(t.intl, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+
+  async function generatePlan(type: "diet" | "training") {
+    setPlanError(null);
+    setGenerating(type);
     try {
-      await fetch("/api/profile", {
+      const res = await fetch("/api/plan", { method: "POST", headers: aiHeaders(), body: JSON.stringify({ type }) });
+      const data = await res.json();
+      if (res.ok) {
+        router.push(type === "diet" ? "/diet?tab=plan" : "/training?tab=plan");
+        router.refresh();
+      } else setPlanError(data.error || d.generateFailed);
+    } catch {
+      setPlanError(d.networkError);
+    } finally {
+      setGenerating(null);
+    }
+  }
+
+  /** Records today's weigh-in (POST /api/weight-log), which also updates the profile weight. */
+  async function saveWeight() {
+    const val = parseWeight(newWeight);
+    if (val === null) return setWeightError(t.errors.invalidWeight);
+    setSavingWeight(true);
+    setWeightError(null);
+    try {
+      const res = await fetch("/api/weight-log", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ weight: val }),
       });
-      setDisplayWeight(val);
-      setEditingWeight(false);
-      router.refresh();
-    } finally { setSavingWeight(false); }
-  }
-
-  async function generatePlan(type: "diet" | "training") {
-    setPlanError(null);
-    if (type === "diet") setGeneratingDiet(true);
-    else setGeneratingTraining(true);
-    try {
-      const res = await fetch("/api/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type }),
-      });
       const data = await res.json();
-      if (res.ok) { router.push(type === "diet" ? "/diet" : "/training"); router.refresh(); }
-      else setPlanError(data.error || "生成失败");
-    } catch { setPlanError("网络错误，请重试"); }
-    finally { setGeneratingDiet(false); setGeneratingTraining(false); }
+      if (!res.ok) throw new Error(data.error);
+      setWeighIn({ date: data.log.date, weight: val });
+      setWeightDelta(data.previous ? { diff: weightChange(data.previous.weight, val), since: data.previous.date } : null);
+      setWeightOpen(false);
+      router.refresh();
+    } catch (e) {
+      setWeightError(e instanceof Error && e.message ? e.message : t.errors.saveFailed);
+    } finally {
+      setSavingWeight(false);
+    }
   }
 
-  const today = new Date().toLocaleDateString("zh-TW", { month: "long", day: "numeric", weekday: "long" });
-  const bmiCategory = bmi < 18.5 ? "偏瘦" : bmi < 24 ? "正常" : bmi < 28 ? "偏重" : "肥胖";
-  const consumed = Math.round(todayCalories);
-  const burned = Math.round(todayBurned);
-  const net = consumed - burned;
-  const remaining = targetCalories - net;
-  const calorieProgress = Math.min(Math.max(consumed / targetCalories, 0), 1);
-  const isOver = remaining < 0;
-
-  // Group food logs by meal
-  const byMeal: Record<string, FoodLog[]> = {};
-  for (const log of foodLogs) {
-    if (!byMeal[log.meal]) byMeal[log.meal] = [];
-    byMeal[log.meal].push(log);
-  }
-
-  // Today's macros total
-  const macros = foodLogs.reduce(
-    (acc, l) => ({ p: acc.p + l.protein, c: acc.c + l.carbs, f: acc.f + l.fat }),
-    { p: 0, c: 0, f: 0 }
-  );
-  const macroGoals = [
-    {
-      key: "fat",
-      label: "脂肪",
-      current: Math.round(macros.f),
-      target: macroTargets.fat,
-      unit: "g",
-      color: "#86a7f5",
-    },
-    {
-      key: "protein",
-      label: "蛋白质",
-      current: Math.round(macros.p),
-      target: macroTargets.protein,
-      unit: "g",
-      color: "#facc15",
-    },
-    {
-      key: "carbs",
-      label: "碳水",
-      current: Math.round(macros.c),
-      target: macroTargets.carbs,
-      unit: "g",
-      color: "#78d66c",
-    },
-  ];
-  const ringRadius = 58;
-  const ringCircumference = 2 * Math.PI * ringRadius;
-  const ringSegmentLength = ringCircumference / macroGoals.length;
-  const ringGapLength = 20;
-  const ringTrackLength = ringSegmentLength - ringGapLength;
-  const ringArcs = macroGoals.map((goal, index) => {
-    const progress = Math.min(Math.max(goal.current / Math.max(goal.target, 1), 0), 1);
-    const visibleLength = ringTrackLength * progress;
-    return {
-      ...goal,
-      dasharray: `${ringTrackLength} ${ringCircumference - ringTrackLength}`,
-      progressDasharray: `${visibleLength} ${ringCircumference - visibleLength}`,
-      dashoffset: -(index * ringSegmentLength),
-      isVisible: visibleLength > 0.5,
-    };
-  });
+  const weighInSubtitle = !weighIn
+    ? d.noWeighIn
+    : `${weighIn.weight} kg · ${
+        weightDelta && weightDelta.diff !== 0
+          ? d.weightChange(weightDelta.diff, shortLabel(weightDelta.since))
+          : weighIn.date === today
+            ? d.weighedToday
+            : d.lastWeighIn(shortLabel(weighIn.date))
+      }`;
 
   return (
-    <div className="max-w-lg mx-auto px-4 pt-6 space-y-4">
+    <div className="mx-auto max-w-lg space-y-5 px-4 pt-5">
       {/* Header */}
-      <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-2xl p-5 text-white">
-        <p className="text-emerald-100 text-sm">{today}</p>
-        <h1 className="text-2xl font-bold mt-1">你好，{user.name} 👋</h1>
-        <div className="flex items-center gap-2 mt-2">
-          <span className="bg-white/20 rounded-full px-3 py-1 text-sm">{GOAL_LABEL[user.goal]}</span>
-          <span className="bg-white/20 rounded-full px-3 py-1 text-sm">BMI {bmi.toFixed(1)} {bmiCategory}</span>
-        </div>
-      </div>
-
-      {/* Nutrition Goals */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-orange-50 text-orange-500 dark:bg-orange-950/50 dark:text-orange-300">
-              <Target size={18} />
-            </div>
-            <div>
-              <span className="block font-semibold text-slate-800 dark:text-slate-100">
-                热量目标：{targetCalories.toLocaleString()} 卡
-              </span>
-              <span className={`mt-0.5 block text-xs ${isOver ? "text-red-500" : "text-slate-500 dark:text-slate-400"}`}>
-                {isOver ? `净摄入已超出 ${Math.abs(remaining)} 卡` : `还剩 ${remaining.toLocaleString()} 卡`}
-              </span>
-            </div>
-          </div>
-          <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-500 dark:bg-slate-700 dark:text-slate-300">
-            今日
+      <header className="flex items-center justify-between gap-2">
+        <Link href="/profile" className="btn-soft flex min-w-0 items-center gap-2 py-1.5 pl-1.5 pr-4">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-mint-deep to-lilac-deep text-sm font-bold text-ink">
+            {user.name.trim().charAt(0).toUpperCase() || "?"}
           </span>
+          <span className="truncate text-sm font-semibold">{d.greeting(user.name)}</span>
+        </Link>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="btn-soft flex items-center gap-1 px-3 py-1.5 text-sm font-semibold" title={d.streakTitle(props.streak)}>
+            <Flame size={16} className="text-flame" fill="currentColor" /> {props.streak}
+          </span>
+          <LanguageSwitcher />
+        </div>
+      </header>
+
+      <WeekStrip selected={selected} today={today} basePath="/dashboard" progress={props.weekProgress} />
+
+      {/* Summary */}
+      <section className="card-hero p-5">
+        <h1 className="flex items-center gap-2 text-base font-semibold">
+          {d.planTitle(goalLabel, fmt(targetCalories))}
+          <Link href="/profile" aria-label={t.profile.editProfile} className="text-slate-500 hover:text-ink dark:hover:text-white">
+            <Pencil size={14} />
+          </Link>
+        </h1>
+        <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
+          {isToday ? d.todayBadge : selectedLabel} · BMI {props.bmi.toFixed(1)} {bmiLabel}
+        </p>
+
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="space-y-4">
+            <Stat label={d.consumed} icon={<Utensils size={13} className="text-sky" />} value={fmt(eaten.calories)} unit={t.common.kcal} />
+            <Stat label={d.burned} icon={<Flame size={13} className="text-flame" />} value={fmt(props.burned)} unit={t.common.kcal} />
+          </div>
+          <CalorieRing
+            eaten={eaten.calories - props.burned}
+            target={targetCalories}
+            value={fmt(Math.abs(remaining))}
+            label={over ? d.kcalOver : d.kcalLeft}
+            over={over}
+          />
         </div>
 
-        <div className="mt-4 grid grid-cols-[150px_1fr] items-center gap-4">
-          <div className="relative h-[150px] w-[150px]">
-            <svg className="h-full w-full -rotate-90" viewBox="0 0 160 160" aria-label="今日热量与营养比例">
-              {ringArcs.map((arc) => (
-                <circle
-                  key={`${arc.key}-track`}
-                  cx="80"
-                  cy="80"
-                  r={ringRadius}
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="16"
-                  strokeLinecap="round"
-                  strokeDasharray={arc.dasharray}
-                  strokeDashoffset={arc.dashoffset}
-                  className="text-slate-100 dark:text-slate-700"
-                />
-              ))}
-              {ringArcs.map((arc) => (
-                arc.isVisible && (
-                  <circle
-                    key={arc.key}
-                    cx="80"
-                    cy="80"
-                    r={ringRadius}
-                    fill="none"
-                    stroke={arc.color}
-                    strokeWidth="16"
-                    strokeLinecap="round"
-                    strokeDasharray={arc.progressDasharray}
-                    strokeDashoffset={arc.dashoffset}
-                  />
-                )
-              ))}
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
-              <div className="text-[10px] leading-none text-slate-500 dark:text-slate-400">已摄入</div>
-              <div className="mt-1 text-3xl font-semibold leading-none text-slate-900 dark:text-slate-50">
-                {consumed.toLocaleString()}
-              </div>
-              <div className="mt-1 text-[10px] leading-none text-slate-500 dark:text-slate-400">卡</div>
-            </div>
-          </div>
-
-          <div className="min-w-0 space-y-3">
-            {macroGoals.map((goal) => {
-              const pct = Math.min(Math.max(goal.current / Math.max(goal.target, 1), 0), 1);
-              const over = goal.current > goal.target;
-              return (
-                <div key={goal.key}>
-                  <div className="flex items-center gap-2">
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700">
-                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: goal.color }} />
-                    </span>
-                    <span className="min-w-0 flex-1 text-sm font-medium text-slate-700 dark:text-slate-200">
-                      {goal.label}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
-                    <div
-                      className="h-full rounded-full"
-                      style={{ width: `${pct * 100}%`, backgroundColor: goal.color }}
-                    />
-                  </div>
-                  <div className={`mt-1 text-xs ${over ? "text-red-500" : "text-slate-500 dark:text-slate-400"}`}>
-                    {goal.current}{goal.unit} / {goal.target}{goal.unit}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+        <div className="mt-5">
+          <MacroBars eaten={eaten} target={props.macroTargets} />
         </div>
+      </section>
 
-        <div className="mt-4 grid grid-cols-2 divide-x divide-slate-200 border-t border-slate-100 pt-3 text-xs text-slate-600 dark:divide-slate-700 dark:border-slate-700 dark:text-slate-300">
-          <div className="flex items-center justify-center gap-1.5 px-3 py-2">
-            <Utensils size={13} className="text-orange-500" />
-            <span>饮食 +{consumed.toLocaleString()}</span>
-          </div>
-          <div className="flex items-center justify-center gap-1.5 px-3 py-2">
-            <Activity size={13} className="text-blue-500" />
-            <span>运动 -{burned.toLocaleString()}</span>
-          </div>
-        </div>
+      <ApiKeyBanner />
 
-        <div className="mt-3 text-center text-xs text-slate-500 dark:text-slate-400">
-          净摄入 <span className="font-semibold text-slate-700 dark:text-slate-200">{net.toLocaleString()}</span> 卡 ·
-          进度 {Math.round(calorieProgress * 100)}%
-        </div>
+      {/* Quick actions */}
+      <div className="space-y-3">
+        <ActionCard
+          tint="tint-lilac"
+          icon={<Scale size={20} className="text-[#8b7cf6]" />}
+          title={d.logWeight}
+          subtitle={weighInSubtitle}
+          onClick={() => {
+            setWeightError(null);
+            setWeightOpen(true);
+          }}
+        />
+        <ActionCard
+          tint="tint-aqua"
+          icon={<Flame size={20} className="text-flame" />}
+          title={d.torchTitle}
+          subtitle={d.torchSubtitle(fmt(props.burned), props.workouts.done, props.workouts.total)}
+          href="/training"
+        />
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 text-center shadow-sm">
-          <Dumbbell size={24} className="mx-auto text-blue-500 mb-1" />
-          <div className="text-xl font-bold text-slate-800 dark:text-slate-100">{completedWorkouts}/{totalWorkouts || "—"}</div>
-          <div className="text-xs text-slate-500 dark:text-slate-400">训练完成</div>
+      {/* Meals */}
+      <section>
+        <div className="mb-3 flex items-center justify-between px-1">
+          <h2 className="text-lg font-semibold">{d.meals}</h2>
+          <Link href="/diet?tab=plan" className="flex items-center text-sm text-slate-500 hover:text-ink dark:text-slate-400 dark:hover:text-white">
+            {t.diet.tabPlan} <ChevronRight size={16} />
+          </Link>
         </div>
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-1">
-            <Scale size={18} className="text-purple-500" />
-            <button onClick={() => setShowWeight(v => !v)} className="text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300">
-              {showWeight ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-          {editingWeight ? (
-            <div className="flex items-center gap-1 mt-1">
-              <input
-                type="number"
-                value={newWeight}
-                onChange={e => setNewWeight(e.target.value)}
-                className="w-full border border-purple-300 dark:border-purple-700 bg-white dark:bg-slate-700 rounded-lg px-2 py-1 text-sm font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-purple-400"
-                autoFocus
-                onKeyDown={e => e.key === "Enter" && handleSaveWeight()}
-              />
-              <button onClick={handleSaveWeight} disabled={savingWeight} className="text-emerald-500 shrink-0"><Check size={16} /></button>
-              <button onClick={() => { setEditingWeight(false); setNewWeight(String(displayWeight)); }} className="text-slate-400 shrink-0"><X size={16} /></button>
-            </div>
-          ) : (
-            <div className="flex items-end justify-between mt-1">
-              <div>
-                <div className="text-xl font-bold text-slate-800 dark:text-slate-100">{showWeight ? displayWeight : "••••"}</div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">目前体重</div>
-              </div>
-              <button onClick={() => setEditingWeight(true)} className="text-slate-300 dark:text-slate-600 hover:text-purple-400 mb-0.5"><Pencil size={14} /></button>
-            </div>
-          )}
+        <div className="space-y-3">
+          {MEAL_ORDER.map((meal) => (
+            <MealCard
+              key={meal}
+              meal={meal}
+              budget={props.mealBudgets[meal]}
+              items={props.foodLogs.filter((l) => l.meal === meal)}
+              addHref={`/diet?${isToday ? "" : `date=${selected}&`}add=${meal}`}
+            />
+          ))}
         </div>
-      </div>
+      </section>
 
-      {/* Today's Food Log */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm overflow-hidden">
-        <button
-          onClick={() => setShowLog(v => !v)}
-          className="w-full flex items-center justify-between px-4 py-3.5"
-        >
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-800 dark:text-slate-100">今日饮食记录</span>
-            {foodLogs.length > 0 && (
-              <span className="text-xs bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-full">
-                {foodLogs.length} 条
-              </span>
-            )}
-          </div>
-          {showLog ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
-        </button>
-
-        {showLog && (
-          <div className="px-4 pb-4 space-y-3">
-            {foodLogs.length === 0 ? (
-              <p className="text-sm text-slate-400 dark:text-slate-500 text-center py-2">
-                还没有记录，发送食物照片到 Telegram 开始追踪
-              </p>
-            ) : (
-              MEAL_ORDER.filter(m => byMeal[m]).map(meal => (
-                <div key={meal}>
-                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">{MEAL_LABEL[meal] || meal}</div>
-                  <div className="space-y-1">
-                    {byMeal[meal].map((log, i) => (
-                      <div key={i} className="flex items-center justify-between py-1.5 px-3 bg-slate-50 dark:bg-slate-700 rounded-xl">
-                        <span className="text-sm text-slate-700 dark:text-slate-200">{log.foodName}</span>
-                        <span className="text-sm font-medium text-orange-500">{Math.round(log.calories)} 卡</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* 7-Day Calorie Chart */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm">
-        <h3 className="font-semibold text-slate-800 dark:text-slate-100 mb-3">近 7 天热量</h3>
-        <ResponsiveContainer width="100%" height={160}>
-          <BarChart data={chartData} barSize={14} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+      {/* Trends */}
+      <section className="card p-4">
+        <h2 className="mb-3 font-semibold">{d.weekCalories}</h2>
+        <ResponsiveContainer width="100%" height={170}>
+          <BarChart data={props.chartData} barSize={12} barGap={3} margin={{ top: 4, right: 4, left: -22, bottom: 0 }}>
             <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 10, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
             <Tooltip
-              contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", fontSize: 12 }}
-              formatter={(v, name) => [`${v ?? 0} 卡`, name === "consumed" ? "摄入" : "运动消耗"]}
+              cursor={{ fill: "rgba(148,163,184,0.12)" }}
+              contentStyle={tooltipStyle}
+              formatter={(v, name) => [`${v ?? 0} ${t.common.kcal}`, name === "consumed" ? d.intake : d.burned]}
             />
-            <Legend iconType="circle" iconSize={8} formatter={v => v === "consumed" ? "摄入" : "运动消耗"} wrapperStyle={{ fontSize: 11 }} />
-            <ReferenceLine y={targetCalories} stroke="#10b981" strokeDasharray="4 3" strokeWidth={1.5} label={{ value: "目标", position: "right", fontSize: 10, fill: "#10b981" }} />
-            <Bar dataKey="consumed" fill="#fb923c" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="burned" fill="#60a5fa" radius={[4, 4, 0, 0]} />
+            <ReferenceLine y={targetCalories} stroke="#43c068" strokeDasharray="4 4" strokeWidth={1.5} ifOverflow="extendDomain" />
+            <Bar dataKey="consumed" fill="#57a7f2" radius={[6, 6, 6, 6]} />
+            <Bar dataKey="burned" fill="#ff7a3d" radius={[6, 6, 6, 6]} />
           </BarChart>
         </ResponsiveContainer>
-      </div>
-
-      {/* Weight History Chart */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-slate-800 dark:text-slate-100">近 30 天体重</h3>
-          {weightChartData.length >= 2 && (() => {
-            const first = weightChartData[0].weight;
-            const last = weightChartData[weightChartData.length - 1].weight;
-            const diff = last - first;
-            const pos = diff > 0;
-            return (
-              <span className={`text-xs font-medium ${diff === 0 ? "text-slate-400" : pos ? "text-red-500" : "text-emerald-500"}`}>
-                {diff === 0 ? "持平" : `${pos ? "▲" : "▼"} ${Math.abs(diff).toFixed(1)} kg`}
-              </span>
-            );
-          })()}
+        <div className="mt-2 flex justify-center gap-4 text-xs text-slate-500 dark:text-slate-400">
+          <Legend color="bg-sky" label={d.intake} />
+          <Legend color="bg-flame" label={d.burned} />
+          <Legend color="bg-leaf" label={d.target} dashed />
         </div>
-        {weightChartData.length === 0 ? (
-          <div className="text-center py-8 text-sm text-slate-400 dark:text-slate-500">
-            还没有体重记录<br />
-            <span className="text-xs">编辑上方体重即可开始追踪</span>
+      </section>
+
+      <section className="card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-semibold">{d.weight30}</h2>
+          {props.weightChartData.length >= 2 &&
+            (() => {
+              const diff = weightChange(props.weightChartData[0].weight, props.weightChartData[props.weightChartData.length - 1].weight);
+              return (
+                <span
+                  className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                    diff === 0 ? "bg-slate-100 text-slate-500 dark:bg-white/10" : diff > 0 ? "bg-peach text-flame" : "bg-mint text-leaf"
+                  }`}
+                >
+                  {diff === 0 ? d.flat : `${diff > 0 ? "▲" : "▼"} ${Math.abs(diff).toFixed(1)} kg`}
+                </span>
+              );
+            })()}
+        </div>
+        {props.weightChartData.length === 0 ? (
+          <div className="py-8 text-center text-sm text-slate-400">
+            {d.noWeight}
+            <br />
+            <span className="text-xs">{d.noWeightHint}</span>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={weightChartData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+            <LineChart data={props.weightChartData} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
               <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-              <YAxis
-                tick={{ fontSize: 10, fill: "#94a3b8" }}
-                axisLine={false}
-                tickLine={false}
-                domain={["dataMin - 1", "dataMax + 1"]}
-              />
-              <Tooltip
-                contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", fontSize: 12 }}
-                formatter={(v) => [`${v} kg`, "体重"]}
-              />
-              {targetWeight != null && (
-                <ReferenceLine y={targetWeight} stroke="#a855f7" strokeDasharray="4 3" strokeWidth={1.5} label={{ value: `目标 ${targetWeight}`, position: "right", fontSize: 10, fill: "#a855f7" }} />
+              <YAxis tick={{ fontSize: 10, fill: "#94a3b8" }} axisLine={false} tickLine={false} domain={["dataMin - 1", "dataMax + 1"]} />
+              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`${v} kg`, d.weightLabel]} />
+              {user.targetWeight != null && (
+                <ReferenceLine
+                  y={user.targetWeight}
+                  stroke="#8b7cf6"
+                  strokeDasharray="4 4"
+                  label={{ value: d.targetWeightRef(user.targetWeight), position: "insideTopRight", fontSize: 10, fill: "#8b7cf6" }}
+                />
               )}
-              <Line type="monotone" dataKey="weight" stroke="#a855f7" strokeWidth={2} dot={{ r: 3, fill: "#a855f7" }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="weight" stroke="#8b7cf6" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
         )}
-      </div>
+      </section>
 
-      {/* Plan Error */}
-      {planError && (
-        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-2xl p-4 flex gap-3">
-          <AlertCircle size={20} className="text-red-500 shrink-0 mt-0.5" />
-          <div>
-            <p className="font-medium text-red-800 dark:text-red-300 text-sm">生成计划失败</p>
-            <p className="text-red-600 dark:text-red-400 text-xs mt-1">{planError}</p>
+      {/* AI plans */}
+      <section>
+        <h2 className="mb-3 px-1 text-lg font-semibold">{d.aiPlans}</h2>
+        {planError && (
+          <div className="mb-3 flex gap-3 rounded-[1.25rem] bg-red-50 p-4 text-sm dark:bg-red-950/40">
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-500" />
+            <div>
+              <p className="font-medium text-red-700 dark:text-red-300">{d.planFailed}</p>
+              <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">{planError}</p>
+            </div>
           </div>
-        </div>
-      )}
-
-      {/* AI Plans */}
-      <div className="space-y-3">
-        <h3 className="font-semibold text-slate-800 dark:text-slate-100 px-1">AI 个人计划</h3>
-
-        {[
-          { type: "diet" as const, emoji: "🥗", label: "饮食计划", bg: "bg-orange-100 dark:bg-orange-900", locked: dietLockedUntil, hasplan: hasDietPlan, generating: generatingDiet, spinner: "border-emerald-400" },
-          { type: "training" as const, emoji: "💪", label: "训练计划", bg: "bg-blue-100 dark:bg-blue-900", locked: trainingLockedUntil, hasplan: hasTrainingPlan, generating: generatingTraining, spinner: "border-blue-400" },
-        ].map(({ type, emoji, label, bg, locked, hasplan, generating, spinner }) => (
-          <button
-            key={type}
-            onClick={() => {
-              if (locked) return;
-              if (hasplan) {
-                router.push(`/${type === "diet" ? "diet" : "training"}`);
-              } else {
-                generatePlan(type);
-              }
-            }}
-            disabled={generating || !!locked}
-            className="w-full bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow disabled:opacity-60"
-          >
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 ${bg} rounded-xl flex items-center justify-center text-xl`}>{emoji}</div>
-              <div className="text-left">
-                <div className="font-medium text-slate-800 dark:text-slate-100">{label}</div>
-                <div className="text-sm text-slate-500 dark:text-slate-400">
-                  {generating ? "AI 正在生成，请稍候..." : locked ? `本周已生成，${locked} 后可更新` : hasplan ? "查看本周计划" : "点击生成个人计划"}
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          {(
+            [
+              { type: "diet", emoji: "🥗", label: d.dietPlan, tint: "tint-mint", href: "/diet?tab=plan" },
+              { type: "training", emoji: "💪", label: d.trainingPlan, tint: "tint-aqua", href: "/training?tab=plan" },
+            ] as const
+          ).map(({ type, emoji, label, tint, href }) => {
+            const state = plans[type];
+            return (
+              <div key={type} className={`${tint} flex flex-col rounded-[1.5rem] p-4`}>
+                <span className="text-2xl">{emoji}</span>
+                <span className="mt-2 font-semibold">{label}</span>
+                <span className="mt-0.5 flex-1 text-xs text-slate-600 dark:text-slate-300">
+                  {generating === type
+                    ? d.generating
+                    : state.lockedUntil
+                      ? d.lockedUntil(state.lockedUntil)
+                      : state.exists
+                        ? d.viewPlan
+                        : d.clickToGenerate}
+                </span>
+                <div className="mt-3 flex gap-2">
+                  {state.exists && (
+                    <Link href={href} className="btn-soft flex-1 py-2 text-center text-xs">
+                      {d.view}
+                    </Link>
+                  )}
+                  {!state.lockedUntil ? (
+                    <button
+                      onClick={() => generatePlan(type)}
+                      disabled={generating !== null}
+                      className="btn-ink flex flex-1 items-center justify-center gap-1 py-2 text-xs"
+                    >
+                      {generating === type && <Loader2 size={12} className="animate-spin" />}
+                      {state.exists ? d.regenerate : d.generate}
+                    </button>
+                  ) : (
+                    !state.exists && (
+                      <span className="flex flex-1 items-center justify-center py-2 text-slate-500">
+                        <Lock size={12} />
+                      </span>
+                    )
+                  )}
                 </div>
               </div>
-            </div>
-            {generating ? <div className={`w-5 h-5 border-2 ${spinner} border-t-transparent rounded-full animate-spin`} />
-              : locked ? <Lock size={16} className="text-slate-300 dark:text-slate-600" />
-              : <ChevronRight size={18} className="text-slate-400" />}
-          </button>
-        ))}
-      </div>
+            );
+          })}
+        </div>
+      </section>
 
       {/* Telegram */}
-      <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-2xl p-4 text-white">
-        <div className="flex items-center gap-3">
-          <Bot size={28} />
-          <div className="flex-1">
-            <div className="font-semibold">Telegram 记录</div>
-            <div className="text-blue-100 text-sm">食物拍照 · 运动截图 · 文字描述</div>
+      <section className="tint-aqua flex items-center gap-3 rounded-[1.5rem] p-4">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/80 dark:bg-white/10">
+          <Bot size={20} className="text-sky" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold">{d.telegramTitle}</div>
+          <div className="text-xs text-slate-600 dark:text-slate-300">
+            {props.telegramBot.connected ? d.telegramHint : t.telegram.dashboardHint}
           </div>
-          <span className="bg-blue-400 px-3 py-1.5 rounded-lg text-sm">🟢 运行中</span>
         </div>
-        <p className="text-blue-100 text-xs mt-2">发送 /quick 快速记录常用食物</p>
+        {props.telegramBot.connected ? (
+          props.telegramBot.username ? (
+            <a href={`https://t.me/${props.telegramBot.username}`} target="_blank" rel="noreferrer" className="btn-soft shrink-0 px-3 py-1.5 text-xs">
+              🟢 @{props.telegramBot.username}
+            </a>
+          ) : (
+            <span className="btn-soft shrink-0 px-3 py-1.5 text-xs">🟢 {t.telegram.connected}</span>
+          )
+        ) : (
+          <Link href="/profile#telegram" className="btn-ink shrink-0 px-4 py-1.5 text-xs">
+            {t.telegram.connect}
+          </Link>
+        )}
+      </section>
+
+      {weightOpen && (
+        <Sheet
+          title={d.logWeight}
+          subtitle={weighIn ? d.lastWeighIn(`${shortLabel(weighIn.date)} · ${weighIn.weight} kg`) : d.noWeighIn}
+          onClose={() => setWeightOpen(false)}
+          busy={savingWeight}
+          footer={
+            <button onClick={saveWeight} disabled={savingWeight} className="btn-ink flex flex-1 items-center justify-center gap-2 py-3 text-sm">
+              {savingWeight && <Loader2 size={16} className="animate-spin" />}
+              {t.common.save}
+            </button>
+          }
+        >
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-slate-500">{d.todayWeight}</span>
+            <div className="relative">
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.1"
+                autoFocus
+                value={newWeight}
+                onChange={(e) => setNewWeight(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveWeight()}
+                className="field pr-12 text-2xl font-semibold"
+              />
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-400">kg</span>
+            </div>
+          </label>
+          {weightError && <p className="mt-2 text-xs text-red-500">{weightError}</p>}
+        </Sheet>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, icon, value, unit }: { label: string; icon: React.ReactNode; value: string; unit: string }) {
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+        {label} {icon}
+      </div>
+      <div className="text-2xl font-bold">
+        {value} <span className="text-sm font-medium text-slate-500 dark:text-slate-400">{unit}</span>
       </div>
     </div>
+  );
+}
+
+function Legend({ color, label, dashed = false }: { color: string; label: string; dashed?: boolean }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className={`inline-block ${dashed ? "h-0.5 w-3" : "h-2 w-2 rounded-full"} ${color}`} />
+      {label}
+    </span>
   );
 }
