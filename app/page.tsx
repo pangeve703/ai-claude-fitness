@@ -1,11 +1,10 @@
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/session";
+
+// Depends on the visitor's session cookie, so never prerender.
+export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const user = await prisma.user.findFirst();
-  if (user) {
-    redirect("/dashboard");
-  } else {
-    redirect("/setup");
-  }
+  const user = await getCurrentUser();
+  redirect(user ? "/dashboard" : "/setup");
 }

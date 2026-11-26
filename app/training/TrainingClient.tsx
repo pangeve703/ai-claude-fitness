@@ -1,10 +1,11 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle, Circle, ChevronDown, ChevronUp, Clock, Info } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleCheck, Circle, Clock, Flame, Loader2, Timer, Trophy } from "lucide-react";
+import { useI18n } from "@/components/I18nProvider";
+import { caloriesBurned, parseWorkoutNotes } from "@/lib/workouts";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-const DAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 interface Exercise {
   exercise: string;
@@ -35,54 +36,41 @@ interface Props {
   trainingLogs: TrainingLog[];
   plan: TrainingPlan | null;
   today: string;
-  goal: string;
+  /** 0 = Monday … 6 = Sunday, in the app time zone (computed on the server). */
+  todayIndex: number;
+  initialTab: "today" | "plan";
 }
 
-const INTENSITY_COLOR: Record<string, string> = {
-  低: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-  中: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
-  高: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+type Intensity = "low" | "medium" | "high";
+const INTENSITY_STYLE: Record<Intensity, string> = {
+  low: "bg-mint text-[#1f8a4c] dark:bg-leaf/20 dark:text-leaf",
+  medium: "bg-lemon text-[#9a6b00] dark:bg-yellow-500/20 dark:text-yellow-300",
+  high: "bg-peach text-flame dark:bg-flame/20",
 };
 
-interface ParsedNotes {
-  rows: { icon: string; text: string }[];
-  details: string | null;
-  raw: string | null;
+/** Plans store a stable enum (low/medium/high); older plans stored 低/中/高. */
+function normalizeIntensity(value: string | undefined): Intensity | null {
+  const v = (value || "").trim().toLowerCase();
+  if (v === "low" || v === "低") return "low";
+  if (v === "medium" || v === "中") return "medium";
+  if (v === "high" || v === "高") return "high";
+  return null;
 }
 
-function parseNotes(notes: string | null | undefined): ParsedNotes {
-  if (!notes) return { rows: [], details: null, raw: null };
-  try {
-    const n = JSON.parse(notes);
-    if (!n || typeof n !== "object") throw new Error();
-    const rows: { icon: string; text: string }[] = [];
-    if (n.distance) rows.push({ icon: "📍", text: String(n.distance) });
-    if (n.pace) rows.push({ icon: "⚡️", text: String(n.pace) });
-    if (n.heartRate) rows.push({ icon: "❤️", text: String(n.heartRate) });
-    if (n.caloriesBurned) rows.push({ icon: "🔥", text: `${n.caloriesBurned} 卡` });
-    return { rows, details: typeof n.details === "string" ? n.details : null, raw: null };
-  } catch {
-    return { rows: [], details: null, raw: notes };
-  }
-}
-
-export default function TrainingClient({ trainingLogs, plan, today }: Props) {
+export default function TrainingClient({ trainingLogs, plan, today, todayIndex, initialTab }: Props) {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"today" | "plan">("today");
-  const [expandedDay, setExpandedDay] = useState<string | null>(null);
+  const { t } = useI18n();
+  const tr = t.training;
+  const [activeTab, setActiveTab] = useState<"today" | "plan">(initialTab);
+  const [planDay, setPlanDay] = useState(todayIndex);
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const todayDayIndex = new Date().getDay();
-  const todayKey = DAYS[todayDayIndex === 0 ? 6 : todayDayIndex - 1];
-
-  const totalMinutes = trainingLogs.reduce((sum: number, l) => sum + l.duration, 0);
+  const totalMinutes = trainingLogs.reduce((sum, l) => sum + l.duration, 0);
   const completedCount = trainingLogs.filter((l) => l.completed).length;
-  const totalBurned = trainingLogs.reduce((sum: number, l) => {
-    const { rows } = parseNotes(l.notes);
-    const cal = rows.find((r) => r.icon === "🔥");
-    if (cal) return sum + parseInt(cal.text) || sum;
-    return sum + l.duration * 5;
-  }, 0);
+  const burned = caloriesBurned(trainingLogs);
+  const todayPlan = plan?.weeklyPlan?.[DAYS[todayIndex]] || [];
+  const isRestDay = todayPlan.length === 0;
 
   async function toggleComplete(id: number, completed: boolean) {
     await fetch("/api/training-log", {
@@ -93,276 +81,245 @@ export default function TrainingClient({ trainingLogs, plan, today }: Props) {
     router.refresh();
   }
 
-  async function addTodayExercises() {
-    if (!plan?.weeklyPlan?.[todayKey]) return;
-    const exercises = plan.weeklyPlan[todayKey];
-    for (const ex of exercises) {
-      await fetch("/api/training-log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          date: today,
-          exercise: ex.exercise + (ex.sets ? ` ${ex.sets}组×${ex.reps}` : ""),
-          duration: ex.duration,
-          notes: ex.notes,
-        }),
-      });
+  async function loadTodayPlan() {
+    setLoading(true);
+    try {
+      for (const ex of todayPlan) {
+        await fetch("/api/training-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            date: today,
+            exercise: (ex.exercise + (ex.sets ? tr.setsRepsCompact(ex.sets, ex.reps ?? "") : "")).slice(0, 120),
+            duration: Math.max(0, Math.round(Number(ex.duration) || 0)),
+            notes: typeof ex.notes === "string" ? ex.notes : undefined,
+          }),
+        });
+      }
+      router.refresh();
+    } finally {
+      setLoading(false);
     }
-    router.refresh();
   }
 
-  const todayPlanExercises = plan?.weeklyPlan?.[todayKey] || [];
-  const isRestDay = todayPlanExercises.length === 0;
-
   return (
-    <div className="max-w-lg mx-auto px-4 pt-6 space-y-4">
-      <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100">训练计划</h1>
-
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-3 text-center shadow-sm">
-          <div className="text-xl font-bold text-blue-600 dark:text-blue-400">{completedCount}</div>
-          <div className="text-xs text-slate-500 dark:text-slate-400">已完成</div>
+    <div className="mx-auto max-w-lg space-y-5 px-4 pt-5">
+      <header className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">{tr.title}</h1>
+        <div className="flex rounded-full bg-white/70 p-1 shadow-sm dark:bg-white/5">
+          {(["today", "plan"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              aria-pressed={activeTab === tab}
+              className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                activeTab === tab ? "bg-ink text-white dark:bg-white dark:text-ink" : "text-slate-500 dark:text-slate-300"
+              }`}
+            >
+              {tab === "today" ? tr.tabToday : tr.tabPlan}
+            </button>
+          ))}
         </div>
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-3 text-center shadow-sm">
-          <div className="text-xl font-bold text-slate-800 dark:text-slate-100">{totalMinutes}</div>
-          <div className="text-xs text-slate-500 dark:text-slate-400">分钟</div>
-        </div>
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-3 text-center shadow-sm">
-          <div className="text-xl font-bold text-orange-500 dark:text-orange-400">
-            {Math.round(totalBurned)}
-          </div>
-          <div className="text-xs text-slate-500 dark:text-slate-400">消耗卡</div>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
-        <button
-          onClick={() => setActiveTab("today")}
-          className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
-            activeTab === "today" ? "bg-white dark:bg-slate-700 shadow-sm text-blue-600 dark:text-blue-400" : "text-slate-500 dark:text-slate-400"
-          }`}
-        >
-          今日训练
-        </button>
-        <button
-          onClick={() => setActiveTab("plan")}
-          className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
-            activeTab === "plan" ? "bg-white dark:bg-slate-700 shadow-sm text-blue-600 dark:text-blue-400" : "text-slate-500 dark:text-slate-400"
-          }`}
-        >
-          本周计划
-        </button>
-      </div>
+      </header>
 
       {activeTab === "today" && (
-        <div className="space-y-3">
-          {/* Today's plan suggestion */}
+        <>
+          <section className="card-hero grid grid-cols-3 gap-2 p-4 text-center">
+            <Stat icon={<Trophy size={16} className="text-leaf" />} value={`${completedCount}/${trainingLogs.length}`} label={tr.completed} />
+            <Stat icon={<Timer size={16} className="text-sky" />} value={String(totalMinutes)} label={tr.minutes} />
+            <Stat icon={<Flame size={16} className="text-flame" />} value={String(burned)} label={tr.burnedKcal} />
+          </section>
+
           {plan && (
-            <div className={`rounded-2xl p-4 ${isRestDay ? "bg-slate-100 dark:bg-slate-800" : "bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800"}`}>
-              <p className="font-medium text-slate-800 dark:text-slate-100 mb-1">
-                {isRestDay ? "🛌 今天是休息日" : `📋 今日计划 (${todayPlanExercises.length} 项运动)`}
-              </p>
+            <section className={`${isRestDay ? "tint-lilac" : "tint-aqua"} rounded-[1.5rem] p-4`}>
+              <p className="font-semibold">{isRestDay ? tr.restDay : tr.todayPlan(todayPlan.length)}</p>
               {!isRestDay && (
                 <>
-                  <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">
-                    {todayPlanExercises.map((e) => e.exercise).join(" · ")}
-                  </p>
+                  <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{todayPlan.map((e) => e.exercise).join(" · ")}</p>
                   {trainingLogs.length === 0 && (
-                    <button
-                      onClick={addTodayExercises}
-                      className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors"
-                    >
-                      载入今日训练
+                    <button onClick={loadTodayPlan} disabled={loading} className="btn-ink mt-3 flex items-center gap-2 px-5 py-2 text-sm">
+                      {loading && <Loader2 size={14} className="animate-spin" />}
+                      {tr.loadToday}
                     </button>
                   )}
                 </>
               )}
-            </div>
+            </section>
           )}
 
           {trainingLogs.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 dark:text-slate-500">
-              <p className="text-4xl mb-2">🏋️</p>
-              <p>还没有训练记录</p>
-              {plan && !isRestDay && (
-                <p className="text-sm mt-1">点击上方「载入今日训练」开始</p>
-              )}
+            <div className="card py-10 text-center">
+              <p className="text-4xl">🏋️</p>
+              <p className="mt-2 font-semibold">{tr.empty}</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{plan && !isRestDay ? tr.emptyHint : tr.emptyHintCamera}</p>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {trainingLogs.map((log) => {
-                const parsed = parseNotes(log.notes);
-                const isExpanded = expandedLogId === log.id;
-                const hasDetails = !!parsed.details || !!parsed.raw;
+                const notes = parseWorkoutNotes(log.notes);
+                const chips = [
+                  notes?.distance && `📍 ${notes.distance}`,
+                  notes?.pace && `⚡ ${notes.pace}`,
+                  notes?.heartRate && `❤️ ${notes.heartRate}`,
+                  notes?.caloriesBurned && `🔥 ${notes.caloriesBurned} ${t.common.kcal}`,
+                ].filter(Boolean) as string[];
+                const details = notes?.details || (!notes && log.notes) || null;
+                const expanded = expandedLogId === log.id;
                 return (
-                  <div
-                    key={log.id}
-                    className={`bg-white dark:bg-slate-800 rounded-2xl shadow-sm overflow-hidden ${
-                      log.completed ? "opacity-70" : ""
-                    }`}
-                  >
-                    <div className="p-4 flex items-start gap-3">
-                      <button onClick={() => toggleComplete(log.id, !log.completed)} className="mt-0.5">
-                        {log.completed ? (
-                          <CheckCircle size={24} className="text-emerald-500" />
-                        ) : (
-                          <Circle size={24} className="text-slate-300 dark:text-slate-600" />
-                        )}
-                      </button>
+                  <div key={log.id} className="card p-4">
+                    <div className="flex items-start gap-3">
                       <button
-                        onClick={() => hasDetails && setExpandedLogId(isExpanded ? null : log.id)}
-                        className="flex-1 min-w-0 text-left"
-                        disabled={!hasDetails}
+                        onClick={() => toggleComplete(log.id, !log.completed)}
+                        aria-label={log.completed ? tr.markUndone : tr.markDone}
+                        className="mt-0.5 shrink-0"
                       >
-                        <div className={`font-medium text-sm ${log.completed ? "line-through text-slate-400 dark:text-slate-500" : "text-slate-800 dark:text-slate-100"}`}>
-                          {log.exercise}
+                        {log.completed ? <CircleCheck size={26} className="text-leaf" /> : <Circle size={26} className="text-slate-300 dark:text-slate-600" />}
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className={`font-semibold ${log.completed ? "text-slate-400 line-through" : ""}`}>{log.exercise}</span>
+                          <span className="flex shrink-0 items-center gap-1 text-xs text-slate-500">
+                            <Clock size={13} /> {log.duration} {t.common.min}
+                          </span>
                         </div>
-                        {parsed.rows.length > 0 && (
-                          <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
-                            {parsed.rows.map((r, i) => (
-                              <span key={i} className="text-xs text-slate-500 dark:text-slate-400">
-                                {r.icon} {r.text}
+                        {chips.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {chips.map((c) => (
+                              <span key={c} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-600 dark:bg-white/5 dark:text-slate-300">
+                                {c}
                               </span>
                             ))}
                           </div>
                         )}
-                      </button>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="flex items-center gap-1 text-slate-400 dark:text-slate-500 text-sm">
-                          <Clock size={14} />
-                          {log.duration}分
-                        </div>
-                        {hasDetails && (
+                        {details && (
                           <button
-                            onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
-                            className="text-slate-300 dark:text-slate-600 hover:text-blue-400"
-                            aria-label="详情"
+                            onClick={() => setExpandedLogId(expanded ? null : log.id)}
+                            className="mt-2 flex items-center gap-0.5 text-xs text-slate-500 hover:text-ink dark:hover:text-white"
                           >
-                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            {tr.details} {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                           </button>
+                        )}
+                        {expanded && details && (
+                          <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-slate-500 dark:text-slate-400">{details}</p>
                         )}
                       </div>
                     </div>
-                    {isExpanded && hasDetails && (
-                      <div className="px-4 pb-4 -mt-1 ml-9 text-xs text-slate-500 dark:text-slate-400 whitespace-pre-wrap leading-relaxed border-t border-slate-100 dark:border-slate-700 pt-3">
-                        {parsed.details || parsed.raw}
-                      </div>
-                    )}
                   </div>
                 );
               })}
             </div>
           )}
-        </div>
+        </>
       )}
 
       {activeTab === "plan" && (
-        <div className="space-y-3">
+        <>
           {!plan ? (
-            <div className="text-center py-10 text-slate-400 dark:text-slate-500">
-              <p className="text-4xl mb-2">🤖</p>
-              <p>还没有 AI 训练计划</p>
-              <p className="text-sm mt-1">返回主页点击「训练计划」生成</p>
+            <div className="card py-12 text-center">
+              <p className="text-4xl">💪</p>
+              <p className="mt-2 font-semibold">{tr.noPlan}</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{tr.noPlanHint}</p>
             </div>
           ) : (
             <>
               {plan.weeklyGoal && (
-                <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl p-4">
-                  <p className="font-medium text-blue-800 dark:text-blue-300">🎯 本周目标</p>
-                  <p className="text-blue-700 dark:text-blue-400 text-sm mt-1">{plan.weeklyGoal}</p>
-                </div>
+                <section className="card-hero p-5">
+                  <p className="text-sm text-slate-600 dark:text-slate-300">{tr.weeklyGoal}</p>
+                  <p className="mt-1 font-semibold leading-snug">{plan.weeklyGoal}</p>
+                </section>
               )}
 
-              {plan.warmup && (
-                <div className="bg-yellow-50 dark:bg-yellow-950/40 border border-yellow-200 dark:border-yellow-800 rounded-2xl p-4">
-                  <p className="font-medium text-yellow-800 dark:text-yellow-300 text-sm">🔥 热身</p>
-                  <p className="text-yellow-700 dark:text-yellow-400 text-sm mt-1">{plan.warmup}</p>
-                </div>
-              )}
-
-              {DAYS.map((day, i) => {
-                const exercises = plan.weeklyPlan?.[day] || [];
-                const isToday = day === todayKey;
-                const isExpanded = expandedDay === day;
-                return (
-                  <div
-                    key={day}
-                    className={`bg-white dark:bg-slate-800 rounded-2xl shadow-sm overflow-hidden ${isToday ? "ring-2 ring-blue-400" : ""}`}
-                  >
+              <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4">
+                {DAYS.map((day, i) => {
+                  const count = plan.weeklyPlan?.[day]?.length ?? 0;
+                  return (
                     <button
-                      onClick={() => setExpandedDay(isExpanded ? null : day)}
-                      className="w-full flex items-center justify-between px-4 py-3"
+                      key={day}
+                      onClick={() => setPlanDay(i)}
+                      aria-pressed={planDay === i}
+                      className={`flex shrink-0 flex-col items-center rounded-2xl px-3.5 py-2 text-sm font-medium transition-colors ${
+                        planDay === i ? "bg-ink text-white dark:bg-white dark:text-ink" : "bg-white/85 text-slate-600 dark:bg-white/5 dark:text-slate-300"
+                      }`}
                     >
-                      <div>
-                        <span className="font-medium text-slate-800 dark:text-slate-100">
-                          {DAY_CN[i]} {isToday && "（今天）"}
-                        </span>
-                        <span className="ml-2 text-sm text-slate-400 dark:text-slate-500">
-                          {exercises.length === 0 ? "休息日" : `${exercises.length} 项运动`}
-                        </span>
-                      </div>
-                      {isExpanded ? (
-                        <ChevronUp size={18} className="text-slate-400" />
-                      ) : (
-                        <ChevronDown size={18} className="text-slate-400" />
-                      )}
+                      {t.days[i]}
+                      <span className="text-[10px] opacity-70">{count === 0 ? "—" : count}</span>
                     </button>
+                  );
+                })}
+              </div>
 
-                    {isExpanded && exercises.length > 0 && (
-                      <div className="border-t border-slate-100 dark:border-slate-700 divide-y divide-slate-50 dark:divide-slate-700/40">
-                        {exercises.map((ex, j) => (
-                          <div key={j} className="px-4 py-3">
-                            <div className="flex items-start justify-between">
-                              <div className="flex-1">
-                                <div className="font-medium text-slate-800 dark:text-slate-100 text-sm">{ex.exercise}</div>
-                                {ex.sets && (
-                                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                    {ex.sets} 组 × {ex.reps}
-                                  </div>
-                                )}
-                                {ex.notes && (
-                                  <div className="text-xs text-slate-400 dark:text-slate-500 mt-1">{ex.notes}</div>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 ml-3">
-                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${INTENSITY_COLOR[ex.intensity] || "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"}`}>
-                                  {ex.intensity}
-                                </span>
-                                <div className="flex items-center gap-1 text-slate-400 dark:text-slate-500 text-xs">
-                                  <Clock size={12} />
-                                  {ex.duration}分
-                                </div>
-                              </div>
-                            </div>
+              {plan.warmup && planDay === todayIndex && (
+                <section className="tint-peach rounded-[1.5rem] p-4">
+                  <p className="text-sm font-semibold">{tr.warmup}</p>
+                  <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{plan.warmup}</p>
+                </section>
+              )}
+
+              {(plan.weeklyPlan?.[DAYS[planDay]] ?? []).length === 0 ? (
+                <div className="tint-lilac rounded-[1.5rem] p-6 text-center font-semibold">{tr.restDay}</div>
+              ) : (
+                <div className="space-y-3">
+                  {plan.weeklyPlan[DAYS[planDay]].map((ex, j) => {
+                    const intensity = normalizeIntensity(ex.intensity);
+                    return (
+                      <div key={j} className="card p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-semibold">{ex.exercise}</div>
+                            {ex.sets ? <div className="mt-0.5 text-xs text-slate-500">{tr.setsReps(ex.sets, ex.reps ?? "")}</div> : null}
                           </div>
-                        ))}
+                          <div className="flex shrink-0 items-center gap-2">
+                            {intensity && (
+                              <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${INTENSITY_STYLE[intensity]}`}>
+                                {tr.intensity[intensity]}
+                              </span>
+                            )}
+                            <span className="flex items-center gap-1 text-xs text-slate-500">
+                              <Clock size={13} /> {ex.duration} {t.common.min}
+                            </span>
+                          </div>
+                        </div>
+                        {ex.notes && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{ex.notes}</p>}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {plan.tips && plan.tips.length > 0 && (
-                <div className="bg-green-50 dark:bg-green-950/40 border border-green-200 dark:border-green-800 rounded-2xl p-4">
-                  <p className="font-medium text-green-800 dark:text-green-300 mb-2">💡 训练建议</p>
-                  {plan.tips.map((tip, i) => (
-                    <p key={i} className="text-green-700 dark:text-green-400 text-sm mb-1">• {tip}</p>
-                  ))}
+                    );
+                  })}
                 </div>
+              )}
+
+              {plan.tips?.length > 0 && (
+                <section className="card p-4">
+                  <p className="mb-2 font-semibold">{tr.tips}</p>
+                  <ul className="space-y-1.5 text-sm text-slate-600 dark:text-slate-300">
+                    {plan.tips.map((tip, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-sky" />
+                        {tip}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
               )}
 
               {plan.cooldown && (
-                <div className="bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 rounded-2xl p-4">
-                  <p className="font-medium text-purple-800 dark:text-purple-300 text-sm">❄️ 冷身</p>
-                  <p className="text-purple-700 dark:text-purple-400 text-sm mt-1">{plan.cooldown}</p>
-                </div>
+                <section className="tint-lilac rounded-[1.5rem] p-4">
+                  <p className="text-sm font-semibold">{tr.cooldown}</p>
+                  <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{plan.cooldown}</p>
+                </section>
               )}
             </>
           )}
-        </div>
+        </>
       )}
+    </div>
+  );
+}
+
+function Stat({ icon, value, label }: { icon: React.ReactNode; value: string; label: string }) {
+  return (
+    <div className="rounded-2xl bg-white/70 px-2 py-3 dark:bg-white/5">
+      <div className="flex justify-center">{icon}</div>
+      <div className="mt-1 text-xl font-bold">{value}</div>
+      <div className="text-[11px] text-slate-600 dark:text-slate-300">{label}</div>
     </div>
   );
 }

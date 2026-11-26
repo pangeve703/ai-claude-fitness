@@ -1,34 +1,36 @@
 import { prisma } from "@/lib/prisma";
-import { redirect } from "next/navigation";
+import { dateKey, weekdayIndex } from "@/lib/dates";
+import { requireUser } from "@/lib/session";
 import NavBar from "@/components/NavBar";
 import TrainingClient from "./TrainingClient";
 
 export const dynamic = "force-dynamic";
 
-export default async function TrainingPage() {
-  const user = await prisma.user.findFirst();
-  if (!user) redirect("/setup");
+export default async function TrainingPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
+  const user = await requireUser();
+  const today = dateKey();
 
-  const today = new Date().toISOString().split("T")[0];
-  const trainingLogs = await prisma.trainingLog.findMany({
-    where: { date: today },
-    orderBy: { createdAt: "asc" },
-  });
+  const [trainingLogs, plan] = await Promise.all([
+    prisma.trainingLog.findMany({ where: { userId: user.id, date: today }, orderBy: { createdAt: "asc" } }),
+    prisma.plan.findFirst({ where: { userId: user.id, type: "training" }, orderBy: { createdAt: "desc" } }),
+  ]);
 
-  const plan = await prisma.plan.findFirst({
-    where: { type: "training" },
-    orderBy: { createdAt: "desc" },
-  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- plan JSON from Claude, shape checked in the client
+  let planContent: any = null;
+  try {
+    planContent = plan ? JSON.parse(plan.content) : null;
+  } catch {}
 
   return (
-    <div className="pb-20 min-h-screen bg-slate-50 dark:bg-slate-900">
+    <div className="min-h-screen pb-28">
       <TrainingClient
         trainingLogs={trainingLogs}
-        plan={plan ? JSON.parse(plan.content) : null}
+        plan={planContent}
         today={today}
-        goal={user.goal}
+        todayIndex={weekdayIndex(today)}
+        initialTab={(await searchParams).tab === "plan" ? "plan" : "today"}
       />
-      <NavBar />
+      <NavBar today={today} />
     </div>
   );
 }

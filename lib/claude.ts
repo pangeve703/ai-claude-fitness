@@ -1,8 +1,44 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { Locale } from "./i18n/config";
+import { bmi as calcBmi, defaultMacros, targetCalories, tdee as calcTdee } from "./nutrition";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-});
+/**
+ * Per-call options. `apiKey` lets a visitor bring their own Anthropic key
+ * (sent from the browser on each request); when omitted we fall back to the
+ * server's ANTHROPIC_API_KEY. See lib/api-key.ts.
+ */
+export interface ClaudeOptions {
+  apiKey?: string | null;
+  /** Language for human-readable values in the output. Defaults to Chinese (used by the Telegram bot). */
+  locale?: Locale;
+}
+
+/**
+ * Prompts are written in Chinese; this rule controls the *output* language, so
+ * one prompt serves both locales. JSON keys and enum values stay fixed.
+ */
+function languageRule(locale: Locale = "zh"): string {
+  return locale === "en"
+    ? "Write every human-readable value (names, descriptions, tips, suggestions) in English, even though these instructions are in Chinese."
+    : "请用简体中文回复。";
+}
+
+export class MissingApiKeyError extends Error {
+  constructor() {
+    super("No Anthropic API key: add your key in 我的 → API Key, or set ANTHROPIC_API_KEY on the server.");
+    this.name = "MissingApiKeyError";
+  }
+}
+
+let serverClient: Anthropic | null = null;
+
+/** Returns a client for the visitor's key, or a cached client for the server key. */
+export function getClient(apiKey?: string | null): Anthropic {
+  if (apiKey) return new Anthropic({ apiKey });
+  if (!process.env.ANTHROPIC_API_KEY) throw new MissingApiKeyError();
+  serverClient ??= new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return serverClient;
+}
 
 // 使用 Haiku（最省钱，适合测试）
 const FAST_MODEL = "claude-haiku-4-5";
@@ -74,7 +110,7 @@ function parseChineseNumber(text: string): number | null {
   return digits[normalized] || null;
 }
 
-function getServingDivisor(caption: string | undefined): number | null {
+export function getServingDivisor(caption: string | undefined): number | null {
   if (!caption) return null;
   const text = caption.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ");
   const digitPatterns = [
@@ -83,7 +119,8 @@ function getServingDivisor(caption: string | undefined): number | null {
     /for\s*(\d{1,2})\s*(?:people|persons|pax|servings|portions)/,
     /(\d{1,2})\s*(?:people|persons|pax|servings|portions|person portion|people portion)/,
     /(?:分成|分为|除以|平均分|分给|分)\s*(\d{1,2})\s*(?:份|人)?/,
-    /(\d{1,2})\s*(?:人份|人吃|个人吃)/,
+    // "4人份", "2人吃", "2人分" (split between 2 people)
+    /(\d{1,2})\s*个?(?:人份|人吃|人分)/,
   ];
 
   for (const pattern of digitPatterns) {
@@ -92,7 +129,7 @@ function getServingDivisor(caption: string | undefined): number | null {
     if (value >= 2 && value <= 20) return value;
   }
 
-  const chinesePattern = text.match(/(?:分成|分为|除以|平均分|分给|分)\s*([一二三四五六七八九十两]{1,3})\s*(?:份|人)?|([一二三四五六七八九十两]{1,3})\s*(?:人份|人吃|个人吃)/);
+  const chinesePattern = text.match(/(?:分成|分为|除以|平均分|分给|分)\s*([一二三四五六七八九十两]{1,3})\s*(?:份|人)?|([一二三四五六七八九十两]{1,3})\s*个?(?:人份|人吃|人分)/);
   const chineseValue = chinesePattern?.[1] || chinesePattern?.[2];
   if (!chineseValue) return null;
 
@@ -104,17 +141,20 @@ function roundNutrition(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function divideFoodResult(result: ImageAnalysisResult, divisor: number | null): ImageAnalysisResult {
+export function divideFoodResult(result: ImageAnalysisResult, divisor: number | null, locale: Locale = "zh"): ImageAnalysisResult {
   if (result.type !== "food" || !divisor) return result;
 
   return {
     ...result,
-    foodName: `${result.foodName}（1/${divisor}份）`,
+    foodName: locale === "en" ? `${result.foodName} (1/${divisor} portion)` : `${result.foodName}（1/${divisor}份）`,
     calories: roundNutrition(result.calories / divisor),
     protein: roundNutrition(result.protein / divisor),
     carbs: roundNutrition(result.carbs / divisor),
     fat: roundNutrition(result.fat / divisor),
-    description: `${result.description}\n已按说明平均分成 ${divisor} 份，本次记录为 1 份估算。`,
+    description:
+      locale === "en"
+        ? `${result.description}\nSplit evenly into ${divisor} portions as requested; this entry is 1 portion.`
+        : `${result.description}\n已按说明平均分成 ${divisor} 份，本次记录为 1 份估算。`,
     calorieRange: result.calorieRange
       ? {
           min: roundNutrition(result.calorieRange.min / divisor),
@@ -132,28 +172,17 @@ function divideFoodResult(result: ImageAnalysisResult, divisor: number | null): 
   };
 }
 
-function calcBMR(profile: UserProfile): number {
-  if (profile.gender === "male") {
-    return 10 * profile.weight + 6.25 * profile.height - 5 * profile.age + 5;
-  }
-  return 10 * profile.weight + 6.25 * profile.height - 5 * profile.age - 161;
-}
+export async function generateDietPlan(profile: UserProfile, opts: ClaudeOptions = {}): Promise<string> {
+  // Targets come from lib/nutrition.ts (same numbers as the dashboard); Claude only plans meals around them.
+  const tdee = Math.round(calcTdee(profile));
+  const target = targetCalories(profile);
+  const macros = defaultMacros(target, profile.weight, profile.goal);
+  const bmi = calcBmi(profile.weight, profile.height);
 
-function calcTDEE(profile: UserProfile): number {
-  const multipliers: Record<string, number> = {
-    sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9,
-  };
-  return calcBMR(profile) * (multipliers[profile.activityLevel] || 1.55);
-}
-
-export async function generateDietPlan(profile: UserProfile): Promise<string> {
-  const tdee = Math.round(calcTDEE(profile));
-  const bmi = profile.weight / ((profile.height / 100) ** 2);
-
-  const response = await anthropic.messages.create({
+  const response = await getClient(opts.apiKey).messages.create({
     model: FAST_MODEL,
     max_tokens: 4000,
-    system: "你是一位专业营养师，请用中文回复，只输出 JSON 不要其他文字。",
+    system: `你是一位专业营养师。${languageRule(opts.locale)} 只输出 JSON 不要其他文字。`,
     messages: [{
       role: "user",
       content: `为以下用户制定一周饮食计划：
@@ -162,11 +191,13 @@ export async function generateDietPlan(profile: UserProfile): Promise<string> {
 活动量：${ACTIVITY_MAP[profile.activityLevel]}
 目标：${GOAL_MAP[profile.goal]}${profile.targetWeight ? `，目标体重：${profile.targetWeight}kg` : ""}
 TDEE：${tdee}卡
+每日目标热量：${target}卡（已按目标调整，所有每日餐食合计应接近这个数）
+宏量营养素目标：蛋白质 ${macros.protein}g，碳水 ${macros.carbs}g，脂肪 ${macros.fat}g
 
 输出 JSON：
 {
-  "dailyCalories": 数字,
-  "macros": {"protein": 数字, "carbs": 数字, "fat": 数字},
+  "dailyCalories": ${target},
+  "macros": {"protein": ${macros.protein}, "carbs": ${macros.carbs}, "fat": ${macros.fat}},
   "weeklyPlan": {
     "monday": {"breakfast": {"name":"食物","calories":数字,"description":"描述"}, "lunch": {...}, "dinner": {...}, "snack": {...}},
     "tuesday": {...}, "wednesday": {...}, "thursday": {...}, "friday": {...}, "saturday": {...}, "sunday": {...}
@@ -179,14 +210,20 @@ TDEE：${tdee}卡
 
   const text = response.content[0].type === "text" ? response.content[0].text : "";
   const match = text.match(/\{[\s\S]*\}/);
-  return match ? match[0] : text;
+  const json = match ? match[0] : text;
+  try {
+    // Enforce the computed targets even if the model drifted from them.
+    return JSON.stringify({ ...JSON.parse(json), dailyCalories: target, macros });
+  } catch {
+    return json;
+  }
 }
 
-export async function generateTrainingPlan(profile: UserProfile): Promise<string> {
-  const response = await anthropic.messages.create({
+export async function generateTrainingPlan(profile: UserProfile, opts: ClaudeOptions = {}): Promise<string> {
+  const response = await getClient(opts.apiKey).messages.create({
     model: FAST_MODEL,
     max_tokens: 4000,
-    system: "你是一位专业健身教练，请用中文回复，只输出 JSON 不要其他文字。",
+    system: `你是一位专业健身教练。${languageRule(opts.locale)} 只输出 JSON 不要其他文字。`,
     messages: [{
       role: "user",
       content: `为以下用户制定一周训练计划：
@@ -197,7 +234,7 @@ export async function generateTrainingPlan(profile: UserProfile): Promise<string
 输出 JSON：
 {
   "weeklyPlan": {
-    "monday": [{"exercise":"名称","sets":数字或null,"reps":"次数/时间","duration":分钟数字,"intensity":"低/中/高","notes":"注意"}],
+    "monday": [{"exercise":"名称","sets":数字或null,"reps":"次数/时间","duration":分钟数字,"intensity":"low|medium|high（固定英文枚举值）","notes":"注意"}],
     "tuesday": [], "wednesday": [...], "thursday": [...], "friday": [...], "saturday": [...], "sunday": []
   },
   "tips": ["建议1","建议2"],
@@ -213,7 +250,7 @@ export async function generateTrainingPlan(profile: UserProfile): Promise<string
   return match ? match[0] : text;
 }
 
-export async function generateCoachReply(message: string, context: CoachChatContext): Promise<string> {
+export async function generateCoachReply(message: string, context: CoachChatContext, opts: ClaudeOptions = {}): Promise<string> {
   const profile = context.profile;
   const today = context.today;
   const profileText = profile
@@ -233,7 +270,7 @@ export async function generateCoachReply(message: string, context: CoachChatCont
   const dietPlan = context.latestDietPlan?.slice(0, 1200) || "暂无饮食计划";
   const trainingPlan = context.latestTrainingPlan?.slice(0, 1200) || "暂无训练计划";
 
-  const response = await anthropic.messages.create({
+  const response = await getClient(opts.apiKey).messages.create({
     model: FAST_MODEL,
     max_tokens: 800,
     system:
@@ -322,7 +359,8 @@ export type TextAnalysisResult =
 export async function analyzeImage(
   imageBase64: string,
   mimeType: string = "image/jpeg",
-  caption?: string
+  caption?: string,
+  opts: ClaudeOptions = {}
 ): Promise<ImageAnalysisResult> {
   const trimmedCaption = caption?.trim();
   const servingDivisor = getServingDivisor(trimmedCaption);
@@ -342,10 +380,10 @@ export async function analyzeImage(
 - 程序会在解析后自动换算成 1/${servingDivisor} 份并记录。`
     : "";
 
-  const response = await anthropic.messages.create({
+  const response = await getClient(opts.apiKey).messages.create({
     model: IMAGE_MODEL,
     max_tokens: 900,
-    system: "你是一位营养师兼健身教练，请用中文回复，只输出 JSON 不要其他文字。",
+    system: `你是一位营养师兼健身教练。${languageRule(opts.locale)} 只输出 JSON 不要其他文字。`,
     messages: [{
       role: "user",
       content: [
@@ -391,17 +429,17 @@ export async function analyzeImage(
   try {
     const match = text.match(/\{[\s\S]*\}/);
     const parsed = JSON.parse(match ? match[0] : text);
-    return divideFoodResult(parsed, servingDivisor);
+    return divideFoodResult(parsed, servingDivisor, opts.locale);
   } catch {
     return { type: "unknown" };
   }
 }
 
-export async function analyzeTextEntry(description: string): Promise<TextAnalysisResult> {
-  const response = await anthropic.messages.create({
+export async function analyzeTextEntry(description: string, opts: ClaudeOptions = {}): Promise<TextAnalysisResult> {
+  const response = await getClient(opts.apiKey).messages.create({
     model: FAST_MODEL,
     max_tokens: 500,
-    system: "你是一位营养师兼健身教练，请用中文回复，只输出 JSON 不要其他文字。",
+    system: `你是一位营养师兼健身教练。${languageRule(opts.locale)} 只输出 JSON 不要其他文字。`,
     messages: [{
       role: "user",
       content: `判断以下文字是在记录食物、运动/训练，还是无法判断，然后按对应格式输出 JSON：
@@ -421,78 +459,5 @@ export async function analyzeTextEntry(description: string): Promise<TextAnalysi
     return JSON.parse(match ? match[0] : text);
   } catch {
     return { type: "unknown" };
-  }
-}
-
-export async function analyzeTextFood(description: string): Promise<{
-  foodName: string;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  meal: string;
-  description: string;
-}> {
-  const response = await anthropic.messages.create({
-    model: FAST_MODEL,
-    max_tokens: 300,
-    system: "你是一位营养师，请用中文回复，只输出 JSON 不要其他文字。",
-    messages: [{
-      role: "user",
-      content: `根据以下食物描述估算营养信息，只输出 JSON：
-描述：${description}
-{"foodName":"食物名称","calories":数字,"protein":数字克,"carbs":数字克,"fat":数字克,"meal":"breakfast或lunch或dinner或snack","description":"份量与食材简述"}`,
-    }],
-  });
-
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    return JSON.parse(match ? match[0] : text);
-  } catch {
-    return { foodName: description, calories: 0, protein: 0, carbs: 0, fat: 0, meal: "snack", description: "无法解析" };
-  }
-}
-
-export async function analyzeFoodImage(
-  imageBase64: string,
-  mimeType: string = "image/jpeg"
-): Promise<{
-  foodName: string;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  description: string;
-}> {
-  const response = await anthropic.messages.create({
-    model: FAST_MODEL,
-    max_tokens: 500,
-    messages: [{
-      role: "user",
-      content: [
-        {
-          type: "image",
-          source: {
-            type: "base64",
-            media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-            data: imageBase64,
-          },
-        },
-        {
-          type: "text",
-          text: `分析这张食物图片，只输出 JSON 不要其他文字：
-{"foodName":"食物名称","calories":数字,"protein":数字,"carbs":数字,"fat":数字,"description":"份量和食材描述"}`,
-        },
-      ],
-    }],
-  });
-
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    return JSON.parse(match ? match[0] : text);
-  } catch {
-    return { foodName: "未知食物", calories: 0, protein: 0, carbs: 0, fat: 0, description: "无法识别" };
   }
 }

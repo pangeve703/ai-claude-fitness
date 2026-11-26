@@ -1,21 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { dateKey } from "@/lib/dates";
+import { apiUser, notFound } from "@/lib/api-auth";
+import { parseFoodInput, parseFoodPatch } from "@/lib/validate";
+import { getDictionary } from "@/lib/i18n/server";
+
+async function invalid(field: string) {
+  const t = await getDictionary();
+  return NextResponse.json({ error: t.errors.invalidField(field), field }, { status: 400 });
+}
+
+function revalidate() {
+  revalidatePath("/dashboard");
+  revalidatePath("/diet");
+}
 
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
+  const auth = await apiUser();
+  if (!auth.user) return auth.response;
+  const date = new URL(req.url).searchParams.get("date") || dateKey();
 
   const logs = await prisma.foodLog.findMany({
-    where: { date },
+    where: { userId: auth.user.id, date },
     orderBy: { createdAt: "asc" },
   });
-
   const totals = logs.reduce(
-    (
-      acc: { calories: number; protein: number; carbs: number; fat: number },
-      log: { calories: number; protein: number; carbs: number; fat: number }
-    ) => ({
+    (acc, log) => ({
       calories: acc.calories + log.calories,
       protein: acc.protein + log.protein,
       carbs: acc.carbs + log.carbs,
@@ -23,29 +34,20 @@ export async function GET(req: NextRequest) {
     }),
     { calories: 0, protein: 0, carbs: 0, fat: 0 }
   );
-  revalidatePath("/dashboard");
-  revalidatePath("/diet");
   return NextResponse.json({ logs, totals });
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await apiUser();
+  if (!auth.user) return auth.response;
+  const input = parseFoodInput(await req.json().catch(() => null));
+  if (!input.ok) return invalid(input.field);
   try {
-    const body = await req.json();
+    const { date, ...fields } = input.data;
     const log = await prisma.foodLog.create({
-      data: {
-        userId: 1,
-        date: body.date || new Date().toISOString().split("T")[0],
-        meal: body.meal,
-        foodName: body.foodName,
-        calories: body.calories,
-        protein: body.protein || 0,
-        carbs: body.carbs || 0,
-        fat: body.fat || 0,
-        source: "manual",
-      },
+      data: { userId: auth.user.id, date: date ?? dateKey(), ...fields },
     });
-    revalidatePath("/dashboard");
-    revalidatePath("/diet");
+    revalidate();
     return NextResponse.json({ log });
   } catch {
     return NextResponse.json({ error: "记录失败" }, { status: 500 });
@@ -53,22 +55,18 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const auth = await apiUser();
+  if (!auth.user) return auth.response;
+  const body = await req.json().catch(() => null);
+  if (!Number.isInteger(body?.id)) return invalid("id");
+  const patch = parseFoodPatch(body);
+  if (!patch.ok) return invalid(patch.field);
   try {
-    const body = await req.json();
-    if (!body.id) return NextResponse.json({ error: "缺少 id" }, { status: 400 });
-    const log = await prisma.foodLog.update({
-      where: { id: body.id },
-      data: {
-        ...(body.meal !== undefined && { meal: body.meal }),
-        ...(body.foodName !== undefined && { foodName: body.foodName }),
-        ...(body.calories !== undefined && { calories: body.calories }),
-        ...(body.protein !== undefined && { protein: body.protein }),
-        ...(body.carbs !== undefined && { carbs: body.carbs }),
-        ...(body.fat !== undefined && { fat: body.fat }),
-      },
-    });
-    revalidatePath("/dashboard");
-    revalidatePath("/diet");
+    // Only the owner's own entries can be changed.
+    const existing = await prisma.foodLog.findFirst({ where: { id: body.id, userId: auth.user.id } });
+    if (!existing) return notFound();
+    const log = await prisma.foodLog.update({ where: { id: existing.id }, data: patch.data });
+    revalidate();
     return NextResponse.json({ log });
   } catch {
     return NextResponse.json({ error: "更新失败" }, { status: 500 });
@@ -76,11 +74,11 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const id = parseInt(searchParams.get("id") || "0");
-
-  await prisma.foodLog.delete({ where: { id } });
-  revalidatePath("/dashboard");
-  revalidatePath("/diet");
+  const auth = await apiUser();
+  if (!auth.user) return auth.response;
+  const id = parseInt(new URL(req.url).searchParams.get("id") || "0");
+  const { count } = await prisma.foodLog.deleteMany({ where: { id, userId: auth.user.id } });
+  if (count === 0) return notFound();
+  revalidate();
   return NextResponse.json({ success: true });
 }

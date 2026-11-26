@@ -1,43 +1,53 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { dateKey } from "@/lib/dates";
+import { apiUser, notFound } from "@/lib/api-auth";
+import { parseWorkoutInput } from "@/lib/validate";
+import { getDictionary } from "@/lib/i18n/server";
+
+function revalidate() {
+  revalidatePath("/dashboard");
+  revalidatePath("/training");
+}
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
-
+  const auth = await apiUser();
+  if (!auth.user) return auth.response;
+  const date = new URL(req.url).searchParams.get("date") || dateKey();
   const logs = await prisma.trainingLog.findMany({
-    where: { date },
+    where: { userId: auth.user.id, date },
     orderBy: { createdAt: "asc" },
   });
-
   return NextResponse.json({ logs });
 }
 
 export async function POST(req: Request) {
-  const body = await req.json();
+  const auth = await apiUser();
+  if (!auth.user) return auth.response;
+  const input = parseWorkoutInput(await req.json().catch(() => null));
+  if (!input.ok) {
+    const t = await getDictionary();
+    return NextResponse.json({ error: t.errors.invalidField(input.field), field: input.field }, { status: 400 });
+  }
+  const { date, ...fields } = input.data;
   const log = await prisma.trainingLog.create({
-    data: {
-      userId: 1,
-      date: body.date || new Date().toISOString().split("T")[0],
-      exercise: body.exercise,
-      duration: body.duration || 0,
-      completed: body.completed || false,
-      notes: body.notes,
-    },
+    data: { userId: auth.user.id, date: date ?? dateKey(), ...fields },
   });
-  revalidatePath("/dashboard");
-  revalidatePath("/training");
+  revalidate();
   return NextResponse.json({ log });
 }
 
 export async function PATCH(req: Request) {
-  const body = await req.json();
-  const log = await prisma.trainingLog.update({
-    where: { id: body.id },
-    data: { completed: body.completed },
+  const auth = await apiUser();
+  if (!auth.user) return auth.response;
+  const body = await req.json().catch(() => null);
+  if (!Number.isInteger(body?.id)) return notFound();
+  const { count } = await prisma.trainingLog.updateMany({
+    where: { id: body.id, userId: auth.user.id },
+    data: { completed: Boolean(body.completed) },
   });
-  revalidatePath("/dashboard");
-  revalidatePath("/training");
-  return NextResponse.json({ log });
+  if (count === 0) return notFound();
+  revalidate();
+  return NextResponse.json({ success: true });
 }

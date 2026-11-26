@@ -1,9 +1,22 @@
 import TelegramBot from "node-telegram-bot-api";
 import { analyzeImage, analyzeTextEntry, generateCoachReply, type ImageAnalysisResult } from "./claude";
 import { prisma } from "./prisma";
+import type { BotRuntimeConfig } from "./bot-config";
+import { addDays, dateKey, hourIn, shortLabel } from "./dates";
+import { parseWeight, weightChange } from "./weight";
+import { latestWeighIn, recordWeight } from "./weight-store";
+import { targetCalories } from "./nutrition";
 
-let bot: TelegramBot | null = null;
-const APP_TIME_ZONE = process.env.APP_TIME_ZONE || "Asia/Singapore";
+/** Whose data a bot reads and writes, and which Anthropic key it uses. */
+interface BotContext {
+  userId: number;
+  apiKey: string | null;
+}
+
+// One TelegramBot per token (each user can connect their own bot). The context
+// object is updated in place on every webhook call, so handlers always see the
+// current owner and key.
+const bots = new Map<string, { bot: TelegramBot; ctx: BotContext }>();
 
 // node-telegram-bot-api dispatches events synchronously and does not await async
 // listeners. On a serverless platform the function suspends as soon as the
@@ -29,48 +42,26 @@ export async function awaitInFlight(): Promise<void> {
   }
 }
 
-export function getBot(): TelegramBot {
-  if (!bot) {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    if (!token) {
-      console.error("❌ TELEGRAM_BOT_TOKEN is not set");
-      throw new Error("TELEGRAM_BOT_TOKEN not configured");
-    }
-
-    // Webhook mode: no polling, no built-in HTTP server. Updates are delivered
-    // via the /api/telegram/webhook route, which calls bot.processUpdate().
-    bot = new TelegramBot(token, { polling: false, webHook: false });
-
-    setupHandlers(bot);
-    console.log("🤖 Telegram Bot 已启动（Webhook 模式）");
+/** Returns the (cached) bot for this config, bound to the config's user. */
+export function getBot(config: Pick<BotRuntimeConfig, "token" | "anthropicKey" | "userId">): TelegramBot {
+  let entry = bots.get(config.token);
+  if (!entry) {
+    // Webhook mode: no polling, no built-in HTTP server. Updates arrive via
+    // the webhook routes, which call bot.processUpdate().
+    const bot = new TelegramBot(config.token, { polling: false, webHook: false });
+    const ctx: BotContext = { userId: config.userId, apiKey: config.anthropicKey };
+    setupHandlers(bot, ctx);
+    entry = { bot, ctx };
+    bots.set(config.token, entry);
   }
-  return bot;
+  entry.ctx.userId = config.userId;
+  entry.ctx.apiKey = config.anthropicKey;
+  return entry.bot;
 }
 
-function getDatePart(parts: Intl.DateTimeFormatPart[], type: string): string {
-  return parts.find((part) => part.type === type)?.value || "";
-}
-
-function getTodayString(date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: APP_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-
-  return `${getDatePart(parts, "year")}-${getDatePart(parts, "month")}-${getDatePart(parts, "day")}`;
-}
-
-function getHourInAppTimeZone(date = new Date()): number {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: APP_TIME_ZONE,
-    hour: "2-digit",
-    hour12: false,
-    hourCycle: "h23",
-  }).formatToParts(date);
-  return Number(getDatePart(parts, "hour"));
-}
+// "Today" and the hour come from lib/dates.ts, shared with the web app.
+const getTodayString = (date = new Date()) => dateKey(date);
+const getHourInAppTimeZone = (date = new Date()) => hourIn(date);
 
 function getMealByHour(date = new Date()): string {
   const hour = getHourInAppTimeZone(date);
@@ -134,37 +125,7 @@ function formatFoodItems(result: FoodImageResult): string {
   return `\n\n🔎 *拆分估算*\n${rows.join("\n")}`;
 }
 
-async function getCaloriesSummary(today: string): Promise<string> {
-  const user = await prisma.user.findFirst();
-  const logs = await prisma.foodLog.findMany({ where: { date: today } });
-  const totalCal = Math.round(logs.reduce((sum: number, l) => sum + l.calories, 0));
-
-  if (!user) return `📊 今日摄入：${totalCal} 卡`;
-
-  const bmr =
-    user.gender === "male"
-      ? 10 * user.weight + 6.25 * user.height - 5 * user.age + 5
-      : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161;
-  const multipliers: Record<string, number> = {
-    sedentary: 1.2,
-    light: 1.375,
-    moderate: 1.55,
-    active: 1.725,
-    very_active: 1.9,
-  };
-  const tdee = Math.round(bmr * (multipliers[user.activityLevel] || 1.55));
-
-  let target = tdee;
-  if (user.goal === "lose_fat") target = tdee - 500;
-  else if (user.goal === "build_muscle") target = tdee + 300;
-
-  const remaining = target - totalCal;
-  const bar = remaining > 0 ? "✅" : "⚠️";
-  return remaining >= 0
-    ? `📊 今日摄入：${totalCal} / ${target} 卡\n${bar} 还可摄入 *${remaining}* 卡`
-    : `📊 今日摄入：${totalCal} / ${target} 卡\n${bar} 已超出 *${Math.abs(remaining)}* 卡`;
-}
-
+/** Daily target: the latest diet plan's calories, else the shared formula (same rule as the dashboard). */
 function getCalorieTarget(
   user: { gender: string; weight: number; height: number; age: number; activityLevel: string; goal: string },
   dietPlanContent?: string | null
@@ -177,23 +138,24 @@ function getCalorieTarget(
       }
     } catch {}
   }
+  return targetCalories(user);
+}
 
-  const bmr =
-    user.gender === "male"
-      ? 10 * user.weight + 6.25 * user.height - 5 * user.age + 5
-      : 10 * user.weight + 6.25 * user.height - 5 * user.age - 161;
-  const multipliers: Record<string, number> = {
-    sedentary: 1.2,
-    light: 1.375,
-    moderate: 1.55,
-    active: 1.725,
-    very_active: 1.9,
-  };
-  const tdee = Math.round(bmr * (multipliers[user.activityLevel] || 1.55));
+async function getCaloriesSummary(userId: number, today: string): Promise<string> {
+  const [user, logs, dietPlan] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId } }),
+    prisma.foodLog.findMany({ where: { userId, date: today } }),
+    prisma.plan.findFirst({ where: { userId, type: "diet" }, orderBy: { createdAt: "desc" } }),
+  ]);
+  const totalCal = Math.round(logs.reduce((sum: number, l) => sum + l.calories, 0));
+  if (!user) return `📊 今日摄入：${totalCal} 卡`;
 
-  if (user.goal === "lose_fat") return tdee - 500;
-  if (user.goal === "build_muscle") return tdee + 300;
-  return tdee;
+  const target = getCalorieTarget(user, dietPlan?.content);
+  const remaining = target - totalCal;
+  const bar = remaining > 0 ? "✅" : "⚠️";
+  return remaining >= 0
+    ? `📊 今日摄入：${totalCal} / ${target} 卡\n${bar} 还可摄入 *${remaining}* 卡`
+    : `📊 今日摄入：${totalCal} / ${target} 卡\n${bar} 已超出 *${Math.abs(remaining)}* 卡`;
 }
 
 function getPlanExcerpt(content: string | null | undefined): string | null {
@@ -216,21 +178,21 @@ function formatWorkoutForCoach(log: { exercise: string; duration: number; comple
   return parts.join("，");
 }
 
-async function getCoachContext(today: string) {
+async function getCoachContext(userId: number, today: string) {
   const [user, foodLogs, trainingLogs, latestDietPlan, latestTrainingPlan] = await Promise.all([
-    prisma.user.findFirst(),
+    prisma.user.findUnique({ where: { id: userId } }),
     prisma.foodLog.findMany({
-      where: { date: today },
+      where: { userId, date: today },
       orderBy: { createdAt: "asc" },
       select: { foodName: true, calories: true, protein: true, carbs: true, fat: true, meal: true },
     }),
     prisma.trainingLog.findMany({
-      where: { date: today },
+      where: { userId, date: today },
       orderBy: { createdAt: "asc" },
       select: { exercise: true, duration: true, completed: true, notes: true },
     }),
-    prisma.plan.findFirst({ where: { type: "diet" }, orderBy: { createdAt: "desc" } }),
-    prisma.plan.findFirst({ where: { type: "training" }, orderBy: { createdAt: "desc" } }),
+    prisma.plan.findFirst({ where: { userId, type: "diet" }, orderBy: { createdAt: "desc" } }),
+    prisma.plan.findFirst({ where: { userId, type: "training" }, orderBy: { createdAt: "desc" } }),
   ]);
 
   const totals = foodLogs.reduce(
@@ -270,14 +232,15 @@ async function getCoachContext(today: string) {
 
 async function sendCoachReply(
   bot: TelegramBot,
+  ctx: BotContext,
   chatId: number,
   message: string,
   editMessageId?: number
 ): Promise<void> {
   await bot.sendChatAction(chatId, "typing");
   const today = getTodayString();
-  const context = await getCoachContext(today);
-  const reply = await generateCoachReply(message, context);
+  const context = await getCoachContext(ctx.userId, today);
+  const reply = await generateCoachReply(message, context, { apiKey: ctx.apiKey });
 
   if (editMessageId) {
     await bot.editMessageText(reply, { chat_id: chatId, message_id: editMessageId });
@@ -287,13 +250,11 @@ async function sendCoachReply(
   await bot.sendMessage(chatId, reply);
 }
 
-async function getQuickFoods() {
+async function getQuickFoods(userId: number) {
   // Top 5 most frequently logged foods (by count, last 30 days)
-  const since = new Date();
-  since.setDate(since.getDate() - 30);
-  const sinceStr = since.toISOString().split("T")[0];
+  const sinceStr = addDays(dateKey(), -30);
   const logs = await prisma.foodLog.findMany({
-    where: { date: { gte: sinceStr } },
+    where: { userId, date: { gte: sinceStr } },
     select: { foodName: true, calories: true, protein: true, carbs: true, fat: true },
   });
   const freq: Record<string, { count: number; calories: number; protein: number; carbs: number; fat: number }> = {};
@@ -308,7 +269,7 @@ async function getQuickFoods() {
     .map(([name, data]) => ({ name, ...data }));
 }
 
-function setupHandlers(bot: TelegramBot) {
+function setupHandlers(bot: TelegramBot, ctx: BotContext) {
   // 欢迎命令
   bot.onText(/\/start/, track(async (msg) => {
     try {
@@ -325,6 +286,7 @@ function setupHandlers(bot: TelegramBot) {
 📋 指令列表：
 /today - 查看今日饮食记录
 /summary - 查看今日营养总结
+/weight 55.2 - 记录今天的体重
 /chat - 和 AI 教练聊天
 /help - 显示帮助`,
         { parse_mode: "Markdown" }
@@ -369,13 +331,49 @@ function setupHandlers(bot: TelegramBot) {
 也可以用 /chat 明确进入聊天：
 • /chat 帮我看一下今天还差什么营养
 
+⚖️ *记录体重*
+/weight 55.2 - 记录今天的体重（同一天再记一次会覆盖）
+/weight - 查看最近一次体重
+
 📋 *指令*
 /today - 今日饮食记录
 /summary - 今日营养摘要
+/weight - 记录或查看体重
 /chat - 和 AI 教练聊天
 /start - 欢迎信息`,
       { parse_mode: "Markdown" }
     );
+  }));
+
+  // /weight 55.2 → record today's weigh-in; /weight alone → show the latest one.
+  bot.onText(/^\/weight(?:@\w+)?(?:\s+(.+))?$/, track(async (msg, match) => {
+    const chatId = msg.chat.id;
+    try {
+      const input = match?.[1]?.trim();
+      if (!input) {
+        const last = await latestWeighIn(ctx.userId);
+        await bot.sendMessage(
+          chatId,
+          last
+            ? `⚖️ 最近一次体重：${last.weight} kg（${shortLabel(last.date)}）\n记录新体重：/weight 55.2`
+            : "⚖️ 还没有体重记录。发送 /weight 55.2 记录今天的体重。"
+        );
+        return;
+      }
+      const weight = parseWeight(input);
+      if (weight === null) {
+        await bot.sendMessage(chatId, "❌ 请输入 20–300 之间的体重（kg），例如：/weight 55.2");
+        return;
+      }
+      const { previous } = await recordWeight(ctx.userId, weight, getTodayString());
+      const diff = previous ? weightChange(previous.weight, weight) : null;
+      const trend =
+        diff === null ? "" : diff === 0 ? `\n与 ${shortLabel(previous!.date)} 持平` : `\n较 ${shortLabel(previous!.date)} ${diff > 0 ? "+" : ""}${diff} kg`;
+      await bot.sendMessage(chatId, `✅ 已记录今天的体重：${weight} kg${trend}`);
+    } catch (err) {
+      console.error("Error in /weight handler:", err);
+      await bot.sendMessage(chatId, "❌ 记录体重失败，请稍后再试");
+    }
   }));
 
   bot.onText(/^\/(?:chat|ask)(?:@\w+)?(?:\s+([\s\S]+))?$/, track(async (msg, match) => {
@@ -389,7 +387,7 @@ function setupHandlers(bot: TelegramBot) {
 
     const processingMsg = await bot.sendMessage(chatId, "💬 AI 教练思考中...");
     try {
-      await sendCoachReply(bot, chatId, question, processingMsg.message_id);
+      await sendCoachReply(bot, ctx, chatId, question, processingMsg.message_id);
     } catch (err) {
       const error = err as { status?: number; message?: string };
       console.error("AI chat failed:", error?.status, error?.message);
@@ -403,7 +401,7 @@ function setupHandlers(bot: TelegramBot) {
   // 快速记录常用食物
   bot.onText(/\/quick/, track(async (msg) => {
     const chatId = msg.chat.id;
-    const foods = await getQuickFoods();
+    const foods = await getQuickFoods(ctx.userId);
     if (foods.length === 0) {
       await bot.sendMessage(chatId, "还没有足够的记录。先发送食物照片或描述来建立你的常用食物库！");
       return;
@@ -433,7 +431,8 @@ function setupHandlers(bot: TelegramBot) {
         return;
       }
 
-      const log = await prisma.foodLog.findUnique({ where: { id: logId } });
+      // Scoped to this bot's user: a forged callback can't delete someone else's entry.
+      const log = await prisma.foodLog.findFirst({ where: { id: logId, userId: ctx.userId } });
       if (!log) {
         await bot.answerCallbackQuery(query.id, { text: "这条记录已经删除过了" });
         await bot.editMessageReplyMarkup(
@@ -443,7 +442,7 @@ function setupHandlers(bot: TelegramBot) {
         return;
       }
 
-      const deleted = await prisma.foodLog.deleteMany({ where: { id: logId } });
+      const deleted = await prisma.foodLog.deleteMany({ where: { id: logId, userId: ctx.userId } });
       if (deleted.count === 0) {
         await bot.answerCallbackQuery(query.id, { text: "这条记录已经删除过了" });
         await bot.editMessageReplyMarkup(
@@ -453,7 +452,7 @@ function setupHandlers(bot: TelegramBot) {
         return;
       }
 
-      const calSummary = await getCaloriesSummary(log.date);
+      const calSummary = await getCaloriesSummary(ctx.userId, log.date);
 
       await bot.answerCallbackQuery(query.id, { text: "已删除" });
       await bot.editMessageText(
@@ -470,7 +469,7 @@ function setupHandlers(bot: TelegramBot) {
     const meal = getMealByHour();
     const log = await prisma.foodLog.create({
       data: {
-        userId: 1,
+        userId: ctx.userId,
         date: today,
         meal,
         foodName: name,
@@ -481,7 +480,7 @@ function setupHandlers(bot: TelegramBot) {
         source: "telegram_quick",
       },
     });
-    const calSummary = await getCaloriesSummary(today);
+    const calSummary = await getCaloriesSummary(ctx.userId, today);
     await bot.answerCallbackQuery(query.id);
     await bot.sendMessage(
       chatId,
@@ -496,7 +495,7 @@ function setupHandlers(bot: TelegramBot) {
     try {
       const today = getTodayString();
       const logs = await prisma.foodLog.findMany({
-        where: { date: today },
+        where: { userId: ctx.userId, date: today },
         orderBy: { createdAt: "asc" },
       });
 
@@ -536,7 +535,7 @@ function setupHandlers(bot: TelegramBot) {
     const chatId = msg.chat.id;
     try {
       const today = getTodayString();
-      const logs = await prisma.foodLog.findMany({ where: { date: today } });
+      const logs = await prisma.foodLog.findMany({ where: { userId: ctx.userId, date: today } });
 
       const totals = logs.reduce(
         (
@@ -551,7 +550,7 @@ function setupHandlers(bot: TelegramBot) {
         { calories: 0, protein: 0, carbs: 0, fat: 0 }
       );
 
-      const calSummary = await getCaloriesSummary(today);
+      const calSummary = await getCaloriesSummary(ctx.userId, today);
 
       const text = `📊 *今日营养摘要*
 
@@ -588,13 +587,13 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
       const base64 = Buffer.from(buffer).toString("base64");
 
       const caption = msg.caption?.trim() || undefined;
-      const result = await analyzeImage(base64, "image/jpeg", caption);
+      const result = await analyzeImage(base64, "image/jpeg", caption, { apiKey: ctx.apiKey });
       const today = getTodayString();
 
       if (result.type === "workout") {
         await prisma.trainingLog.create({
           data: {
-            userId: 1,
+            userId: ctx.userId,
             date: today,
             exercise: result.activity,
             duration: result.duration,
@@ -631,7 +630,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
 
         const log = await prisma.foodLog.create({
           data: {
-            userId: 1,
+            userId: ctx.userId,
             date: today,
             meal,
             foodName: result.foodName,
@@ -643,7 +642,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           },
         });
 
-        const calSummary = await getCaloriesSummary(today);
+        const calSummary = await getCaloriesSummary(ctx.userId, today);
         await bot.editMessageText(
           `✅ *已记录 ${MEAL_NAME[meal]}！*\n\n🍽 *${result.foodName}*\n${result.description}\n\n🔥 卡路里：*${result.calories}* 卡${calorieRangeText}\n🥩 蛋白质：${result.protein}g\n🍞 碳水：${result.carbs}g\n🧈 脂肪：${result.fat}g\n🎯 估算信心：${confidenceText}${itemBreakdown}\n\n${calSummary}`,
           {
@@ -694,7 +693,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           // Update the most recent food log today to correct meal type
           const today = getTodayString();
           const last = await prisma.foodLog.findFirst({
-            where: { date: today },
+            where: { userId: ctx.userId, date: today },
             orderBy: { createdAt: "desc" },
           });
           if (last) {
@@ -720,7 +719,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
       if (looksLikeCoachQuestion(text)) {
         const processingMsg = await bot.sendMessage(chatId, "💬 AI 教练思考中...");
         try {
-          await sendCoachReply(bot, chatId, text, processingMsg.message_id);
+          await sendCoachReply(bot, ctx, chatId, text, processingMsg.message_id);
         } catch (err) {
           const error = err as { status?: number; message?: string };
           console.error("AI chat failed:", error?.status, error?.message);
@@ -736,10 +735,10 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
       const processingMsg = await bot.sendMessage(chatId, "🔍 正在判断是记录还是聊天...");
 
       try {
-        const result = await analyzeTextEntry(text);
+        const result = await analyzeTextEntry(text, { apiKey: ctx.apiKey });
 
         if (result.type === "unknown") {
-          await sendCoachReply(bot, chatId, text, processingMsg.message_id);
+          await sendCoachReply(bot, ctx, chatId, text, processingMsg.message_id);
           return;
         }
 
@@ -748,7 +747,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
         if (result.type === "workout") {
           await prisma.trainingLog.create({
             data: {
-              userId: 1,
+              userId: ctx.userId,
               date: today,
               exercise: result.activity,
               duration: Math.max(0, Math.round(result.duration || 0)),
@@ -782,7 +781,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
         }
 
         if (result.calories === 0) {
-          await sendCoachReply(bot, chatId, text, processingMsg.message_id);
+          await sendCoachReply(bot, ctx, chatId, text, processingMsg.message_id);
           return;
         }
 
@@ -791,7 +790,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
 
         const log = await prisma.foodLog.create({
           data: {
-            userId: 1,
+            userId: ctx.userId,
             date: today,
             meal,
             foodName: result.foodName,
@@ -803,7 +802,7 @@ ${logs.length === 0 ? "还没有记录，发送食物照片或描述开始追踪
           },
         });
 
-        const calSummary = await getCaloriesSummary(today);
+        const calSummary = await getCaloriesSummary(ctx.userId, today);
 
         const replyText = `✅ *已记录 ${MEAL_NAME[meal] || meal}！*
 

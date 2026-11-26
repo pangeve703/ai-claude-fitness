@@ -41,3 +41,10 @@ yarn-error.log*
 next-env.d.ts
 
 /app/generated/prisma
+!.env.example
+
+# local Claude Code settings (may contain machine-specific commands and secrets)
+.claude/settings.local.json
+
+# private interview walkthrough (kept locally, not published)
+docs/DEMO.md

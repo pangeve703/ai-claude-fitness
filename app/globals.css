@@ -1,89 +1,167 @@
 @import "tailwindcss";
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Design tokens: soft mint / aqua / lilac pastels, black ("ink") actions,
+ * and three accent colours for the macros: carbs = sky, protein = leaf, fat = flame.
+ * Tailwind generates utilities from these (bg-mint, text-flame, …).
+ */
+@theme {
+  --font-sans: var(--font-poppins), "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+
+  --color-ink: #12141a;
+  --color-mint: #d3f4e6;
+  --color-mint-deep: #9fe3c8;
+  --color-aqua: #d2ebf8;
+  --color-aqua-deep: #9fd3f0;
+  --color-lilac: #ddd6fc;
+  --color-lilac-deep: #bdb0f7;
+  --color-peach: #ffe4d2;
+  --color-lemon: #fbf0c5;
+  --color-flame: #ff7a3d;
+  --color-leaf: #43c068;
+  --color-sky: #57a7f2;
+}
+
 :root {
-  --background: #f8fafc;
-  --foreground: #1e293b;
-  --cute-shadow: 0 24px 70px rgba(16, 185, 129, 0.22);
+  --foreground: #1a1d24;
+  --cute-shadow: 0 24px 70px rgba(70, 110, 140, 0.25);
 }
 
 .dark {
-  --background: #0f172a;
-  --foreground: #f1f5f9;
+  --foreground: #eef2f7;
 }
 
 body {
-  background: var(--background);
   color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
+/* Page background: pastel washes like the reference design. */
+.app-bg {
+  background:
+    radial-gradient(120% 55% at 0% 0%, #cdf3e2 0%, transparent 60%),
+    radial-gradient(100% 55% at 100% 0%, #d3eafb 0%, transparent 60%),
+    radial-gradient(120% 70% at 50% 100%, #e9e4fd 0%, transparent 70%),
+    #f3f7fa;
+  background-attachment: fixed;
+}
+.dark .app-bg {
+  background:
+    radial-gradient(120% 55% at 0% 0%, #0f3a2f 0%, transparent 60%),
+    radial-gradient(100% 55% at 100% 0%, #0f2c40 0%, transparent 60%),
+    radial-gradient(120% 70% at 50% 100%, #221d47 0%, transparent 70%),
+    #0a0f1d;
+  background-attachment: fixed;
+}
+
+/* Surfaces */
+.card {
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 1.5rem;
+  box-shadow: 0 10px 30px -14px rgba(40, 80, 110, 0.22);
+  backdrop-filter: blur(10px);
+}
+.dark .card {
+  background: rgba(22, 29, 46, 0.86);
+  box-shadow: none;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* The big summary card: mint → aqua → lilac. */
+.card-hero {
+  border-radius: 1.75rem;
+  background: linear-gradient(140deg, #c6f0de 0%, #cfe9f8 55%, #dcdafb 100%);
+  box-shadow: 0 16px 40px -18px rgba(40, 120, 110, 0.35);
+}
+.dark .card-hero {
+  background: linear-gradient(140deg, #134537 0%, #123a54 55%, #2a2660 100%);
+  box-shadow: none;
+}
+
+/* Pastel tints for meal cards and quick actions. */
+.tint-aqua { background: linear-gradient(135deg, #d6eefb 0%, #c4e4f7 100%); }
+.tint-lilac { background: linear-gradient(135deg, #e3ddfd 0%, #d3caf9 100%); }
+.tint-mint { background: linear-gradient(135deg, #d8f5e9 0%, #c3efdc 100%); }
+.tint-peach { background: linear-gradient(135deg, #ffe9db 0%, #ffdcc6 100%); }
+.dark .tint-aqua { background: linear-gradient(135deg, rgba(87, 167, 242, 0.2), rgba(87, 167, 242, 0.1)); }
+.dark .tint-lilac { background: linear-gradient(135deg, rgba(160, 140, 250, 0.24), rgba(160, 140, 250, 0.12)); }
+.dark .tint-mint { background: linear-gradient(135deg, rgba(67, 192, 104, 0.22), rgba(67, 192, 104, 0.1)); }
+.dark .tint-peach { background: linear-gradient(135deg, rgba(255, 122, 61, 0.22), rgba(255, 122, 61, 0.1)); }
+
+/* Primary action: black pill (white in dark mode). */
+.btn-ink {
+  background: var(--color-ink);
+  color: #fff;
+  border-radius: 9999px;
+  font-weight: 600;
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+.btn-ink:hover { opacity: 0.9; }
+.btn-ink:active { transform: scale(0.98); }
+.btn-ink:disabled { opacity: 0.45; }
+.dark .btn-ink { background: #f2f5f9; color: var(--color-ink); }
+
+/* Soft white pill (secondary). */
+.btn-soft {
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 9999px;
+  font-weight: 500;
+  box-shadow: 0 4px 14px -8px rgba(40, 80, 110, 0.35);
+}
+.dark .btn-soft { background: rgba(255, 255, 255, 0.08); box-shadow: none; }
+
+/* Inputs share one look everywhere. */
+.field {
+  width: 100%;
+  min-width: 0;
+  border-radius: 1rem;
+  border: 1px solid #e3e8ef;
+  background: #fff;
+  padding: 0.7rem 0.9rem;
+  color: var(--foreground);
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.field:focus { border-color: var(--color-ink); box-shadow: 0 0 0 3px rgba(18, 20, 26, 0.08); }
+.dark .field { background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.1); }
+.dark .field:focus { border-color: #f2f5f9; box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08); }
+
+/* Popups */
 @keyframes cute-backdrop-in {
-  from {
-    opacity: 0;
-    backdrop-filter: blur(0);
-  }
-  to {
-    opacity: 1;
-    backdrop-filter: blur(8px);
-  }
+  from { opacity: 0; backdrop-filter: blur(0); }
+  to { opacity: 1; backdrop-filter: blur(8px); }
 }
 
 @keyframes cute-panel-in {
-  0% {
-    opacity: 0;
-    transform: translateY(26px) scale(0.96);
-  }
-  70% {
-    opacity: 1;
-    transform: translateY(-4px) scale(1.015);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  0% { opacity: 0; transform: translateY(26px) scale(0.96); }
+  70% { opacity: 1; transform: translateY(-4px) scale(1.015); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-.cute-popup-backdrop {
-  animation: cute-backdrop-in 180ms ease-out both;
-}
+.cute-popup-backdrop { animation: cute-backdrop-in 180ms ease-out both; }
 
 .cute-popup-panel {
   animation: cute-panel-in 320ms cubic-bezier(0.2, 0.9, 0.25, 1.15) both;
-  border: 1px solid rgba(167, 243, 208, 0.75);
   box-shadow: var(--cute-shadow);
 }
-
-.cute-tap {
-  transition:
-    transform 160ms ease,
-    box-shadow 160ms ease,
-    background-color 160ms ease,
-    border-color 160ms ease;
-}
-
-.cute-tap:hover {
-  transform: translateY(-1px);
-}
-
-.cute-tap:active {
-  transform: translateY(1px) scale(0.98);
-}
-
 .dark .cute-popup-panel {
-  border-color: rgba(20, 184, 166, 0.28);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
 }
+
+.cute-tap { transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease; }
+.cute-tap:active { transform: scale(0.97); }
+
+/* Hide scrollbars on horizontal pill rows. */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .cute-popup-backdrop,
-  .cute-popup-panel {
-    animation: none;
-  }
-
+  .cute-popup-panel { animation: none; }
   .cute-tap,
-  .cute-tap:hover,
-  .cute-tap:active {
-    transform: none;
-  }
+  .cute-tap:active,
+  .btn-ink:active { transform: none; }
 }
